@@ -1,0 +1,46 @@
+[package]
+name = "rai-sdk"
+version = "0.1.0"
+edition = "2024"
+description = "Rust AI SDK — unified client for OpenAI and Anthropic with tool calling and streaming"
+license = "MIT"
+keywords = ["ai", "openai", "anthropic", "claude", "llm", "tool-calling", "streaming"]
+categories = ["api-bindings", "asynchronous"]
+
+[dependencies]
+# Async runtime & streams
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+futures = "0.3"
+async-stream = "0.3"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# HTTP
+reqwest = { version = "0.12", features = ["json", "stream"] }
+bytes = "1"
+
+# Error handling
+thiserror = "2"
+
+# Logging
+tracing = "0.1"
+
+# Schema generation & validation
+schemars = "0.8"
+jsonschema = "0.28"
+
+# Retry jitter
+rand = "0.9"
+
+[dev-dependencies]
+tokio-test = "0.4"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[features]
+default = ["openai", "anthropic", "openrouter"]
+openai = []
+anthropic = []
+openrouter = []
