@@ -11,8 +11,7 @@ use crate::{
     config::Config,
     error::{Error, ProviderKind, Result},
     message::{
-        ContentBlock, ImageSource, Message, Prompt, Response, ToolCall,
-        ToolDefinition, Usage,
+        ContentBlock, ImageSource, Message, Prompt, Response, ToolCall, ToolDefinition, Usage,
     },
     model::OpenRouterModel,
 };
@@ -75,7 +74,10 @@ impl OpenRouterProvider {
         config: &crate::generation::GenerationConfig,
         tool_definitions: Option<&[ToolDefinition]>,
     ) -> Result<Response> {
-        info!(model = model.as_str(), "Generating completion with OpenRouter");
+        info!(
+            model = model.as_str(),
+            "Generating completion with OpenRouter"
+        );
 
         let request = self.build_request(model, prompt, config, false, tool_definitions);
         let url = format!("{}/chat/completions", self.base_url);
@@ -96,10 +98,7 @@ impl OpenRouterProvider {
             req_builder = req_builder.header("X-Title", app_title);
         }
 
-        let response = req_builder
-            .json(&request)
-            .send()
-            .await?;
+        let response = req_builder.json(&request).send().await?;
 
         let status = response.status();
         if !status.is_success() {
@@ -140,10 +139,7 @@ impl OpenRouterProvider {
             req_builder = req_builder.header("X-Title", app_title);
         }
 
-        let response = req_builder
-            .json(&request)
-            .send()
-            .await?;
+        let response = req_builder.json(&request).send().await?;
 
         let status = response.status();
         if !status.is_success() {
@@ -229,7 +225,9 @@ impl OpenRouterProvider {
             model: model.as_str().to_string(),
             messages,
             stream: Some(stream),
-            stream_options: stream.then(|| OpenRouterStreamOptions { include_usage: true }),
+            stream_options: stream.then(|| OpenRouterStreamOptions {
+                include_usage: true,
+            }),
             temperature: config.temperature,
             max_tokens: config.max_tokens,
             top_p: config.top_p,
@@ -265,7 +263,11 @@ impl OpenRouterProvider {
         request
     }
 
-    fn parse_response(&self, model: &OpenRouterModel, response: OpenRouterResponse) -> Result<Response> {
+    fn parse_response(
+        &self,
+        model: &OpenRouterModel,
+        response: OpenRouterResponse,
+    ) -> Result<Response> {
         let choice = response.choices.first().ok_or_else(|| Error::Request {
             provider: ProviderKind::OpenRouter,
             message: "No choices in response".to_string(),
@@ -344,7 +346,9 @@ impl OpenRouterProvider {
         }
     }
 
-    fn parse_provider_sse_stream<S>(byte_stream: S) -> impl Stream<Item = Result<crate::provider::ProviderStreamEvent>>
+    fn parse_provider_sse_stream<S>(
+        byte_stream: S,
+    ) -> impl Stream<Item = Result<crate::provider::ProviderStreamEvent>>
     where
         S: Stream<Item = std::result::Result<Bytes, reqwest::Error>> + Send + 'static,
     {
@@ -436,8 +440,6 @@ impl OpenRouterProvider {
             }
         }
     }
-
-
 }
 
 // ── OpenRouter API types ───────────────────────────────────────────────────────
@@ -642,7 +644,13 @@ mod tests {
         let prompt = Prompt::single(Message::user("hello"));
         let config = GenerationConfig::new().with_json_mode(true);
 
-        let request = provider.build_request(&OpenRouterModel::Custom("gpt-4o".into()), &prompt, &config, false, None);
+        let request = provider.build_request(
+            &OpenRouterModel::Custom("gpt-4o".into()),
+            &prompt,
+            &config,
+            false,
+            None,
+        );
 
         assert!(matches!(
             request.response_format,
@@ -664,7 +672,13 @@ mod tests {
         });
         let config = GenerationConfig::new().with_json_schema(schema.clone());
 
-        let request = provider.build_request(&OpenRouterModel::Custom("gpt-4o".into()), &prompt, &config, false, None);
+        let request = provider.build_request(
+            &OpenRouterModel::Custom("gpt-4o".into()),
+            &prompt,
+            &config,
+            false,
+            None,
+        );
 
         match request.response_format {
             Some(OpenRouterResponseFormat::JsonSchema { json_schema }) => {
@@ -684,7 +698,13 @@ mod tests {
             .with_json_mode(true)
             .with_json_schema(serde_json::json!({ "type": "object" }));
 
-        let request = provider.build_request(&OpenRouterModel::Custom("gpt-4o".into()), &prompt, &config, false, None);
+        let request = provider.build_request(
+            &OpenRouterModel::Custom("gpt-4o".into()),
+            &prompt,
+            &config,
+            false,
+            None,
+        );
 
         assert!(matches!(
             request.response_format,

@@ -562,8 +562,14 @@ mod tests {
         let definitions = registry.definitions();
         let schema = &definitions[0].input_schema;
 
-        assert_eq!(schema["type"], serde_json::Value::String("object".to_string()));
-        assert_eq!(schema["additionalProperties"], serde_json::Value::Bool(false));
+        assert_eq!(
+            schema["type"],
+            serde_json::Value::String("object".to_string())
+        );
+        assert_eq!(
+            schema["additionalProperties"],
+            serde_json::Value::Bool(false)
+        );
         assert!(schema.get("properties").is_some());
     }
 }

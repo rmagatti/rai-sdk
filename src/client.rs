@@ -331,7 +331,9 @@ impl<ModelState> Client<ModelState> {
                     .openrouter
                     .as_ref()
                     .ok_or_else(|| Error::ProviderNotConfigured(ProviderKind::OpenRouter))?;
-                provider.generate_stream(openrouter_model, prompt, config).await
+                provider
+                    .generate_stream(openrouter_model, prompt, config)
+                    .await
             }
 
             #[allow(unreachable_patterns)]
