@@ -347,7 +347,9 @@ impl AnthropicProvider {
         }
     }
 
-    fn parse_provider_sse_stream<S>(byte_stream: S) -> impl Stream<Item = Result<crate::provider::ProviderStreamEvent>>
+    fn parse_provider_sse_stream<S>(
+        byte_stream: S,
+    ) -> impl Stream<Item = Result<crate::provider::ProviderStreamEvent>>
     where
         S: Stream<Item = std::result::Result<Bytes, reqwest::Error>> + Send + 'static,
     {
@@ -637,7 +639,6 @@ struct StreamUsage {
 struct StreamError {
     error: AnthropicErrorDetail,
 }
-
 
 #[cfg(test)]
 mod tests {

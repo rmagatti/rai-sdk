@@ -11,8 +11,7 @@ use crate::{
     config::Config,
     error::{Error, ProviderKind, Result},
     message::{
-        ContentBlock, ImageSource, Message, Prompt, Response, ToolCall,
-        ToolDefinition, Usage,
+        ContentBlock, ImageSource, Message, Prompt, Response, ToolCall, ToolDefinition, Usage,
     },
     model::OpenAIModel,
 };
@@ -208,7 +207,9 @@ impl OpenAIProvider {
             model: model.as_str().to_string(),
             messages,
             stream: Some(stream),
-            stream_options: stream.then(|| OpenAIStreamOptions { include_usage: true }),
+            stream_options: stream.then(|| OpenAIStreamOptions {
+                include_usage: true,
+            }),
             temperature: config.temperature,
             max_tokens: config.max_tokens,
             top_p: config.top_p,
@@ -329,7 +330,9 @@ impl OpenAIProvider {
         }
     }
 
-    fn parse_provider_sse_stream<S>(byte_stream: S) -> impl Stream<Item = Result<crate::provider::ProviderStreamEvent>>
+    fn parse_provider_sse_stream<S>(
+        byte_stream: S,
+    ) -> impl Stream<Item = Result<crate::provider::ProviderStreamEvent>>
     where
         S: Stream<Item = std::result::Result<Bytes, reqwest::Error>> + Send + 'static,
     {
@@ -421,8 +424,6 @@ impl OpenAIProvider {
             }
         }
     }
-
-
 }
 
 // ── OpenAI API types ───────────────────────────────────────────────────────
