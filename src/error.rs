@@ -146,6 +146,30 @@ impl Error {
         matches!(self, Error::RateLimit { .. })
     }
 
+    /// Short error category string for use as a metrics or logging label.
+    pub fn kind_str(&self) -> &'static str {
+        match self {
+            Error::Auth { .. } => "auth",
+            Error::Request { .. } => "request",
+            Error::RateLimit { .. } => "rate_limit",
+            Error::InvalidRequest(_) => "invalid_request",
+            Error::ModelNotAvailable { .. } => "model_not_available",
+            Error::ProviderNotConfigured(_) => "provider_not_configured",
+            Error::ProviderNotEnabled(_) => "provider_not_enabled",
+            Error::ContentFiltered { .. } => "content_filtered",
+            Error::Config(_) => "config",
+            Error::Serialization(_) => "serialization",
+            Error::Http(_) => "http",
+            Error::Stream(_) => "stream",
+            Error::Timeout { .. } => "timeout",
+            Error::ToolProviderUnsupported { .. } => "tool_provider_unsupported",
+            Error::ToolArguments { .. } => "tool_arguments",
+            Error::ToolNotFound { .. } => "tool_not_found",
+            Error::ToolLoopLimitExceeded { .. } => "tool_loop_limit_exceeded",
+            Error::StructuredOutput { .. } => "structured_output",
+        }
+    }
+
     /// Get the provider associated with this error, if any.
     pub fn provider(&self) -> Option<ProviderKind> {
         match self {

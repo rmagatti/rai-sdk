@@ -77,11 +77,12 @@ impl<ModelState> std::fmt::Debug for Client<ModelState> {
 impl Client<ModelMissing> {
     /// Create a new AI client with the given configuration.
     pub fn new(config: Config) -> Result<Self> {
+        let default_retry_config = config.retry_config();
         Self::new_with_defaults(
             config,
             None,
             GenerationConfig::default(),
-            RetryConfig::default(),
+            default_retry_config,
             ToolRegistry::new(),
         )
     }
@@ -1059,6 +1060,7 @@ impl<ModelState> ClientBuilder<ModelState> {
     /// Use configuration from environment variables.
     pub fn from_env(mut self) -> Self {
         self.config = Config::from_env();
+        self.default_retry_config = self.config.retry_config();
         self
     }
 
@@ -1092,15 +1094,43 @@ impl<ModelState> ClientBuilder<ModelState> {
         self
     }
 
+    /// Set the OpenRouter base URL.
+    pub fn openrouter_base_url(mut self, url: impl Into<String>) -> Self {
+        self.config.openrouter_base_url = Some(url.into());
+        self
+    }
+
+    /// Set the OpenRouter HTTP referer attribution header.
+    pub fn openrouter_http_referer(mut self, referer: impl Into<String>) -> Self {
+        self.config.openrouter_http_referer = Some(referer.into());
+        self
+    }
+
+    /// Set the OpenRouter title attribution header.
+    pub fn openrouter_title(mut self, title: impl Into<String>) -> Self {
+        self.config.openrouter_title = Some(title.into());
+        self
+    }
+
+    /// Set OpenRouter app categories attribution header.
+    pub fn openrouter_categories(mut self, categories: Vec<String>) -> Self {
+        self.config.openrouter_categories = Some(categories);
+        self
+    }
+
     /// Set the OpenRouter App URL.
     pub fn openrouter_app_url(mut self, url: impl Into<String>) -> Self {
-        self.config.openrouter_app_url = Some(url.into());
+        let url = url.into();
+        self.config.openrouter_app_url = Some(url.clone());
+        self.config.openrouter_http_referer = Some(url);
         self
     }
 
     /// Set the OpenRouter App Title.
     pub fn openrouter_app_title(mut self, title: impl Into<String>) -> Self {
-        self.config.openrouter_app_title = Some(title.into());
+        let title = title.into();
+        self.config.openrouter_app_title = Some(title.clone());
+        self.config.openrouter_title = Some(title);
         self
     }
 

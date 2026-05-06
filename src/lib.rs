@@ -16,7 +16,7 @@ pub use message::{
     ContentBlock, ImageSource, Message, Prompt, Response, Role, StreamChunk, StructuredOutput,
     ToolCall, ToolDefinition, Usage,
 };
-pub use model::{AnthropicModel, Model, OpenAIModel};
+pub use model::{AnthropicModel, Model, OpenAIModel, OpenRouterModel};
 pub use retry::RetryConfig;
 pub use schemars::{self, JsonSchema};
 pub use tool::{Tool, ToolContext};

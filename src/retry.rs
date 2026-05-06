@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use rand::Rng;
+use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 /// Configuration for automatic retry with exponential backoff.
@@ -25,7 +26,7 @@ use tracing::warn;
 /// // Disable retries entirely
 /// let none = RetryConfig::none();
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RetryConfig {
     /// Maximum number of retry attempts (0 = no retries).
     pub max_retries: u32,
@@ -140,6 +141,8 @@ where
                     attempt = attempt + 1,
                     max_retries = config.max_retries,
                     delay_ms = delay.as_millis() as u64,
+                    error_kind = e.kind_str(),
+                    provider = ?e.provider(),
                     error = %e,
                     "Retrying after transient error"
                 );
