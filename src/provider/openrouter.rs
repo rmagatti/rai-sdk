@@ -25,8 +25,9 @@ pub struct OpenRouterProvider {
     client: Client,
     api_key: String,
     base_url: String,
-    app_url: Option<String>,
-    app_title: Option<String>,
+    http_referer: Option<String>,
+    title: Option<String>,
+    categories_header: Option<String>,
 }
 
 impl std::fmt::Debug for OpenRouterProvider {
@@ -34,8 +35,9 @@ impl std::fmt::Debug for OpenRouterProvider {
         f.debug_struct("OpenRouterProvider")
             .field("base_url", &self.base_url)
             .field("api_key", &"[REDACTED]")
-            .field("app_url", &self.app_url)
-            .field("app_title", &self.app_title)
+            .field("http_referer", &self.http_referer)
+            .field("title", &self.title)
+            .field("categories_header", &self.categories_header)
             .finish()
     }
 }
@@ -49,7 +51,9 @@ impl OpenRouterProvider {
             .openrouter_key()
             .ok_or(Error::ProviderNotConfigured(ProviderKind::OpenRouter))?;
 
-        let base_url = OPENROUTER_API_URL.to_string();
+        let base_url = config
+            .openrouter_base_url()
+            .unwrap_or_else(|| OPENROUTER_API_URL.to_string());
 
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(config.timeout()))
@@ -60,8 +64,11 @@ impl OpenRouterProvider {
             client,
             api_key,
             base_url,
-            app_url: config.openrouter_app_url(),
-            app_title: config.openrouter_app_title(),
+            http_referer: config.openrouter_http_referer(),
+            title: config.openrouter_title(),
+            categories_header: config
+                .openrouter_categories()
+                .map(|values| values.join(",")),
         })
     }
 
@@ -85,20 +92,7 @@ impl OpenRouterProvider {
         debug!(url = %url, "Sending request to OpenRouter");
         debug!(request_payload = ?request, "OpenRouter request payload");
 
-        let mut req_builder = self
-            .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Content-Type", "application/json");
-
-        if let Some(app_url) = &self.app_url {
-            req_builder = req_builder.header("HTTP-Referer", app_url);
-        }
-        if let Some(app_title) = &self.app_title {
-            req_builder = req_builder.header("X-Title", app_title);
-        }
-
-        let response = req_builder.json(&request).send().await?;
+        let response = self.request_builder(&url).json(&request).send().await?;
 
         let status = response.status();
         if !status.is_success() {
@@ -126,20 +120,7 @@ impl OpenRouterProvider {
 
         debug!(url = %url, "Sending streaming request to OpenRouter");
 
-        let mut req_builder = self
-            .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Content-Type", "application/json");
-
-        if let Some(app_url) = &self.app_url {
-            req_builder = req_builder.header("HTTP-Referer", app_url);
-        }
-        if let Some(app_title) = &self.app_title {
-            req_builder = req_builder.header("X-Title", app_title);
-        }
-
-        let response = req_builder.json(&request).send().await?;
+        let response = self.request_builder(&url).json(&request).send().await?;
 
         let status = response.status();
         if !status.is_success() {
@@ -231,6 +212,7 @@ impl OpenRouterProvider {
             temperature: config.temperature,
             max_tokens: config.max_tokens,
             top_p: config.top_p,
+            top_k: config.top_k,
             stop: config.stop_sequences.clone(),
             response_format: None,
             tools: tool_definitions.map(|tools| {
@@ -261,6 +243,30 @@ impl OpenRouterProvider {
         }
 
         request
+    }
+
+    fn request_builder(&self, url: &str) -> reqwest::RequestBuilder {
+        let mut builder = self
+            .client
+            .post(url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Content-Type", "application/json");
+
+        if let Some(http_referer) = &self.http_referer {
+            builder = builder.header("HTTP-Referer", http_referer);
+        }
+
+        if let Some(title) = &self.title {
+            builder = builder
+                .header("X-OpenRouter-Title", title)
+                .header("X-Title", title);
+        }
+
+        if let Some(categories_header) = &self.categories_header {
+            builder = builder.header("X-OpenRouter-Categories", categories_header);
+        }
+
+        builder
     }
 
     fn parse_response(
@@ -459,6 +465,8 @@ struct OpenRouterRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     top_p: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    top_k: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     stop: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     response_format: Option<OpenRouterResponseFormat>,
@@ -633,8 +641,9 @@ mod tests {
             client: Client::new(),
             api_key: "test-key".to_string(),
             base_url: "https://example.com".to_string(),
-            app_url: None,
-            app_title: None,
+            http_referer: None,
+            title: None,
+            categories_header: None,
         }
     }
 
@@ -710,5 +719,22 @@ mod tests {
             request.response_format,
             Some(OpenRouterResponseFormat::JsonSchema { .. })
         ));
+    }
+
+    #[test]
+    fn build_request_includes_top_k() {
+        let provider = test_provider();
+        let prompt = Prompt::single(Message::user("hello"));
+        let config = GenerationConfig::new().with_top_k(40);
+
+        let request = provider.build_request(
+            &OpenRouterModel::Custom("gpt-4o".into()),
+            &prompt,
+            &config,
+            false,
+            None,
+        );
+
+        assert_eq!(request.top_k, Some(40));
     }
 }

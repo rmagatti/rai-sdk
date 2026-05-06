@@ -345,6 +345,17 @@ impl Prompt {
         }
     }
 
+    /// Append a message to the prompt.
+    pub fn push_message(&mut self, message: Message) {
+        self.messages.push(message);
+    }
+
+    /// Return a new prompt with an additional message appended.
+    pub fn with_message(mut self, message: Message) -> Self {
+        self.push_message(message);
+        self
+    }
+
     /// Add a history of conversation turns to the prompt.
     pub fn with_history(mut self, history: Vec<ConversationTurn>) -> Self {
         for turn in history {

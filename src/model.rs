@@ -110,6 +110,30 @@ impl Model {
     pub fn openrouter_custom(name: impl Into<String>) -> Self {
         Model::OpenRouter(OpenRouterModel::Custom(name.into()))
     }
+
+    pub fn openrouter_auto() -> Self {
+        Model::OpenRouter(OpenRouterModel::Auto)
+    }
+
+    pub fn openrouter_gpt5() -> Self {
+        Model::OpenRouter(OpenRouterModel::Gpt5)
+    }
+
+    pub fn openrouter_claude_sonnet_4_5() -> Self {
+        Model::OpenRouter(OpenRouterModel::ClaudeSonnet4_5)
+    }
+
+    pub fn openrouter_gemini_25_flash() -> Self {
+        Model::OpenRouter(OpenRouterModel::Gemini25Flash)
+    }
+
+    pub fn openrouter_deepseek_r1() -> Self {
+        Model::OpenRouter(OpenRouterModel::DeepseekR1)
+    }
+
+    pub fn openrouter_qwen3_coder() -> Self {
+        Model::OpenRouter(OpenRouterModel::Qwen3Coder)
+    }
 }
 
 /// OpenAI model variants.
@@ -216,15 +240,236 @@ impl AnthropicModel {
 /// OpenRouter model variants.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum OpenRouterModel {
-    /// Custom model name
+    /// OpenRouter auto-router alias.
+    Auto,
+    /// OpenRouter free-tier alias.
+    Free,
+
+    // OpenAI models
+    Gpt5,
+    Gpt5Mini,
+    Gpt5Nano,
+    Gpt5Codex,
+    Gpt5_1,
+    Gpt5_2,
+    Gpt5_2Pro,
+    Gpt5_3Chat,
+    Gpt5_4,
+    Gpt4_1,
+    Gpt4o,
+    O3,
+    O3Pro,
+    O3DeepResearch,
+    O4Mini,
+    GptOss120b,
+
+    // Anthropic models
+    ClaudeSonnet4,
+    ClaudeSonnet4_5,
+    ClaudeOpus4_1,
+    ClaudeOpus4_5,
+    ClaudeHaiku4_5,
+    Claude3_7Sonnet,
+
+    // Google models
+    Gemini31ProPreview,
+    Gemini3FlashPreview,
+    Gemini25Pro,
+    Gemini25Flash,
+    Gemini25FlashImage,
+
+    // xAI models
+    Grok4,
+    Grok4Fast,
+    Grok4_1Fast,
+    GrokCodeFast1,
+
+    // Meta / Llama models
+    Llama4Maverick,
+    Llama4Scout,
+    Llama3_3_70bInstruct,
+    Llama3_2_11bVisionInstruct,
+
+    // Qwen models
+    Qwen3Max,
+    Qwen3MaxThinking,
+    Qwen3Coder,
+    Qwen3CoderPlus,
+    Qwen3_235bA22b,
+    Qwen3Vl235bA22bInstruct,
+    Qwen3Vl235bA22bThinking,
+
+    // DeepSeek models
+    DeepseekChatV3_1,
+    DeepseekR1,
+    DeepseekV3_2,
+
+    // Mistral models
+    MistralLarge,
+    MistralMedium3_1,
+    Codestral2508,
+    DevstralMedium,
+    PixtralLarge2411,
+
+    // Perplexity models
+    SonarPro,
+    SonarReasoningPro,
+    SonarDeepResearch,
+
+    // Cohere models
+    CommandA,
+
+    // Moonshot AI models
+    KimiK2_5,
+    KimiK2Thinking,
+
+    // Z.ai models
+    Glm5,
+
+    // Xiaomi models
+    MimoV2Omni,
+
+    /// Any other OpenRouter `vendor/model` string.
     Custom(String),
 }
 
 impl OpenRouterModel {
     pub fn as_str(&self) -> &str {
         match self {
+            Self::Auto => "openrouter/auto",
+            Self::Free => "openrouter/free",
+            Self::Gpt5 => "openai/gpt-5",
+            Self::Gpt5Mini => "openai/gpt-5-mini",
+            Self::Gpt5Nano => "openai/gpt-5-nano",
+            Self::Gpt5Codex => "openai/gpt-5-codex",
+            Self::Gpt5_1 => "openai/gpt-5.1",
+            Self::Gpt5_2 => "openai/gpt-5.2",
+            Self::Gpt5_2Pro => "openai/gpt-5.2-pro",
+            Self::Gpt5_3Chat => "openai/gpt-5.3-chat",
+            Self::Gpt5_4 => "openai/gpt-5.4",
+            Self::Gpt4_1 => "openai/gpt-4.1",
+            Self::Gpt4o => "openai/gpt-4o",
+            Self::O3 => "openai/o3",
+            Self::O3Pro => "openai/o3-pro",
+            Self::O3DeepResearch => "openai/o3-deep-research",
+            Self::O4Mini => "openai/o4-mini",
+            Self::GptOss120b => "openai/gpt-oss-120b",
+            Self::ClaudeSonnet4 => "anthropic/claude-sonnet-4",
+            Self::ClaudeSonnet4_5 => "anthropic/claude-sonnet-4.5",
+            Self::ClaudeOpus4_1 => "anthropic/claude-opus-4.1",
+            Self::ClaudeOpus4_5 => "anthropic/claude-opus-4.5",
+            Self::ClaudeHaiku4_5 => "anthropic/claude-haiku-4.5",
+            Self::Claude3_7Sonnet => "anthropic/claude-3.7-sonnet",
+            Self::Gemini31ProPreview => "google/gemini-3.1-pro-preview",
+            Self::Gemini3FlashPreview => "google/gemini-3-flash-preview",
+            Self::Gemini25Pro => "google/gemini-2.5-pro",
+            Self::Gemini25Flash => "google/gemini-2.5-flash",
+            Self::Gemini25FlashImage => "google/gemini-2.5-flash-image",
+            Self::Grok4 => "x-ai/grok-4",
+            Self::Grok4Fast => "x-ai/grok-4-fast",
+            Self::Grok4_1Fast => "x-ai/grok-4.1-fast",
+            Self::GrokCodeFast1 => "x-ai/grok-code-fast-1",
+            Self::Llama4Maverick => "meta-llama/llama-4-maverick",
+            Self::Llama4Scout => "meta-llama/llama-4-scout",
+            Self::Llama3_3_70bInstruct => "meta-llama/llama-3.3-70b-instruct",
+            Self::Llama3_2_11bVisionInstruct => "meta-llama/llama-3.2-11b-vision-instruct",
+            Self::Qwen3Max => "qwen/qwen3-max",
+            Self::Qwen3MaxThinking => "qwen/qwen3-max-thinking",
+            Self::Qwen3Coder => "qwen/qwen3-coder",
+            Self::Qwen3CoderPlus => "qwen/qwen3-coder-plus",
+            Self::Qwen3_235bA22b => "qwen/qwen3-235b-a22b",
+            Self::Qwen3Vl235bA22bInstruct => "qwen/qwen3-vl-235b-a22b-instruct",
+            Self::Qwen3Vl235bA22bThinking => "qwen/qwen3-vl-235b-a22b-thinking",
+            Self::DeepseekChatV3_1 => "deepseek/deepseek-chat-v3.1",
+            Self::DeepseekR1 => "deepseek/deepseek-r1",
+            Self::DeepseekV3_2 => "deepseek/deepseek-v3.2",
+            Self::MistralLarge => "mistralai/mistral-large",
+            Self::MistralMedium3_1 => "mistralai/mistral-medium-3.1",
+            Self::Codestral2508 => "mistralai/codestral-2508",
+            Self::DevstralMedium => "mistralai/devstral-medium",
+            Self::PixtralLarge2411 => "mistralai/pixtral-large-2411",
+            Self::SonarPro => "perplexity/sonar-pro",
+            Self::SonarReasoningPro => "perplexity/sonar-reasoning-pro",
+            Self::SonarDeepResearch => "perplexity/sonar-deep-research",
+            Self::CommandA => "cohere/command-a",
+            Self::KimiK2_5 => "moonshotai/kimi-k2.5",
+            Self::KimiK2Thinking => "moonshotai/kimi-k2-thinking",
+            Self::Glm5 => "z-ai/glm-5",
+            Self::MimoV2Omni => "xiaomi/mimo-v2-omni",
             Self::Custom(s) => s,
         }
+    }
+}
+
+impl std::str::FromStr for OpenRouterModel {
+    type Err = std::convert::Infallible;
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        let model = match value {
+            "openrouter/auto" => Self::Auto,
+            "openrouter/free" => Self::Free,
+            "openai/gpt-5" => Self::Gpt5,
+            "openai/gpt-5-mini" => Self::Gpt5Mini,
+            "openai/gpt-5-nano" => Self::Gpt5Nano,
+            "openai/gpt-5-codex" => Self::Gpt5Codex,
+            "openai/gpt-5.1" => Self::Gpt5_1,
+            "openai/gpt-5.2" => Self::Gpt5_2,
+            "openai/gpt-5.2-pro" => Self::Gpt5_2Pro,
+            "openai/gpt-5.3-chat" => Self::Gpt5_3Chat,
+            "openai/gpt-5.4" => Self::Gpt5_4,
+            "openai/gpt-4.1" => Self::Gpt4_1,
+            "openai/gpt-4o" => Self::Gpt4o,
+            "openai/o3" => Self::O3,
+            "openai/o3-pro" => Self::O3Pro,
+            "openai/o3-deep-research" => Self::O3DeepResearch,
+            "openai/o4-mini" => Self::O4Mini,
+            "openai/gpt-oss-120b" => Self::GptOss120b,
+            "anthropic/claude-sonnet-4" => Self::ClaudeSonnet4,
+            "anthropic/claude-sonnet-4.5" => Self::ClaudeSonnet4_5,
+            "anthropic/claude-opus-4.1" => Self::ClaudeOpus4_1,
+            "anthropic/claude-opus-4.5" => Self::ClaudeOpus4_5,
+            "anthropic/claude-haiku-4.5" => Self::ClaudeHaiku4_5,
+            "anthropic/claude-3.7-sonnet" => Self::Claude3_7Sonnet,
+            "google/gemini-3.1-pro-preview" => Self::Gemini31ProPreview,
+            "google/gemini-3-flash-preview" => Self::Gemini3FlashPreview,
+            "google/gemini-2.5-pro" => Self::Gemini25Pro,
+            "google/gemini-2.5-flash" => Self::Gemini25Flash,
+            "google/gemini-2.5-flash-image" => Self::Gemini25FlashImage,
+            "x-ai/grok-4" => Self::Grok4,
+            "x-ai/grok-4-fast" => Self::Grok4Fast,
+            "x-ai/grok-4.1-fast" => Self::Grok4_1Fast,
+            "x-ai/grok-code-fast-1" => Self::GrokCodeFast1,
+            "meta-llama/llama-4-maverick" => Self::Llama4Maverick,
+            "meta-llama/llama-4-scout" => Self::Llama4Scout,
+            "meta-llama/llama-3.3-70b-instruct" => Self::Llama3_3_70bInstruct,
+            "meta-llama/llama-3.2-11b-vision-instruct" => Self::Llama3_2_11bVisionInstruct,
+            "qwen/qwen3-max" => Self::Qwen3Max,
+            "qwen/qwen3-max-thinking" => Self::Qwen3MaxThinking,
+            "qwen/qwen3-coder" => Self::Qwen3Coder,
+            "qwen/qwen3-coder-plus" => Self::Qwen3CoderPlus,
+            "qwen/qwen3-235b-a22b" => Self::Qwen3_235bA22b,
+            "qwen/qwen3-vl-235b-a22b-instruct" => Self::Qwen3Vl235bA22bInstruct,
+            "qwen/qwen3-vl-235b-a22b-thinking" => Self::Qwen3Vl235bA22bThinking,
+            "deepseek/deepseek-chat-v3.1" => Self::DeepseekChatV3_1,
+            "deepseek/deepseek-r1" => Self::DeepseekR1,
+            "deepseek/deepseek-v3.2" => Self::DeepseekV3_2,
+            "mistralai/mistral-large" => Self::MistralLarge,
+            "mistralai/mistral-medium-3.1" => Self::MistralMedium3_1,
+            "mistralai/codestral-2508" => Self::Codestral2508,
+            "mistralai/devstral-medium" => Self::DevstralMedium,
+            "mistralai/pixtral-large-2411" => Self::PixtralLarge2411,
+            "perplexity/sonar-pro" => Self::SonarPro,
+            "perplexity/sonar-reasoning-pro" => Self::SonarReasoningPro,
+            "perplexity/sonar-deep-research" => Self::SonarDeepResearch,
+            "cohere/command-a" => Self::CommandA,
+            "moonshotai/kimi-k2.5" => Self::KimiK2_5,
+            "moonshotai/kimi-k2-thinking" => Self::KimiK2Thinking,
+            "z-ai/glm-5" => Self::Glm5,
+            "xiaomi/mimo-v2-omni" => Self::MimoV2Omni,
+            other => Self::Custom(other.to_string()),
+        };
+
+        Ok(model)
     }
 }
 
@@ -245,6 +490,10 @@ mod tests {
             ProviderKind::Anthropic
         );
         assert_eq!(Model::claude_opus_46().provider(), ProviderKind::Anthropic);
+        assert_eq!(
+            Model::openrouter_auto().provider(),
+            ProviderKind::OpenRouter
+        );
     }
 
     #[test]
@@ -255,6 +504,21 @@ mod tests {
         assert_eq!(Model::gpt_5_3_instant().as_str(), "gpt-5.3-instant");
         assert_eq!(Model::claude_sonnet_46().as_str(), "claude-sonnet-4-6");
         assert_eq!(Model::claude_opus_46().as_str(), "claude-opus-4-6");
+        assert_eq!(Model::openrouter_auto().as_str(), "openrouter/auto");
+        assert_eq!(Model::openrouter_gpt5().as_str(), "openai/gpt-5");
+        assert_eq!(Model::openrouter_qwen3_coder().as_str(), "qwen/qwen3-coder");
+    }
+
+    #[test]
+    fn openrouter_model_from_str_handles_known_and_custom_models() {
+        assert_eq!(
+            "openrouter/auto".parse::<OpenRouterModel>(),
+            Ok(OpenRouterModel::Auto)
+        );
+        assert_eq!(
+            "acme/custom-model".parse::<OpenRouterModel>(),
+            Ok(OpenRouterModel::Custom("acme/custom-model".to_string()))
+        );
     }
 
     #[test]
