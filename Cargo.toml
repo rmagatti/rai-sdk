@@ -29,8 +29,8 @@ thiserror = "2"
 tracing = "0.1"
 
 # Schema generation & validation
-schemars = "0.8"
-jsonschema = "0.28"
+schemars = "1.2"
+jsonschema = "0.33"
 
 # Retry jitter
 rand = "0.9"
