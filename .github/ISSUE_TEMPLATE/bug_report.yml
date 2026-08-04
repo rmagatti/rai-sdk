@@ -1,0 +1,136 @@
+name: Bug report
+description: Report incorrect or unexpected behavior in rai-sdk.
+title: "bug: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report.
+
+        > [!CAUTION]
+        > **Never paste API keys, tokens, or other credentials into this issue.**
+        > Redact anything that looks like `sk-...`, `sk-ant-...`, or `sk-or-...`
+        > from logs, backtraces, and code snippets before submitting.
+        > If you believe you have found a security vulnerability, do not open a
+        > public issue — see [SECURITY.md](https://github.com/rmagatti/rai-sdk/blob/main/SECURITY.md).
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+        - label: This report contains no API keys, tokens, or other credentials.
+          required: true
+
+  - type: input
+    id: sdk-version
+    attributes:
+      label: rai-sdk version
+      description: The version from your `Cargo.toml` or `cargo tree -p rai-sdk`.
+      placeholder: "0.1.0"
+    validations:
+      required: true
+
+  - type: input
+    id: rust-version
+    attributes:
+      label: Rust version
+      description: Output of `rustc --version`.
+      placeholder: "rustc 1.86.0 (05f9846f8 2025-03-31)"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      description: OS name, version, and architecture.
+      placeholder: "macOS 15.3 (aarch64)"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Provider
+      description: Which provider does this affect?
+      multiple: true
+      options:
+        - OpenAI
+        - Anthropic
+        - OpenRouter
+        - Not provider specific
+        - Unsure
+    validations:
+      required: true
+
+  - type: input
+    id: features
+    attributes:
+      label: Enabled Cargo features
+      description: >
+        The features you enabled for `rai-sdk`. Use `default` if you did not
+        change them.
+      placeholder: "default (openai, anthropic, openrouter)"
+    validations:
+      required: true
+
+  - type: input
+    id: model
+    attributes:
+      label: Model
+      description: The model constructor or model ID involved, if any.
+      placeholder: "Model::gpt4o_mini()"
+    validations:
+      required: false
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: >
+        Minimal steps or a minimal Rust snippet that reproduces the problem.
+        A self-contained snippet is by far the most useful thing you can provide.
+      render: rust
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: >
+        What actually happened? Include the full error, `Debug` output, or
+        compiler diagnostics. Remember to redact credentials.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: >
+        Optional. Relevant `tracing` output, for example from
+        `RUST_LOG=rai_sdk=debug`. Redact credentials before pasting.
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Anything else that might help, such as workarounds you found.
+    validations:
+      required: false
