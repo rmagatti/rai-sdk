@@ -1,3 +1,15 @@
+//! Retry policy for transient provider failures.
+//!
+//! [`RetryConfig`] describes exponential backoff with optional jitter. It is
+//! applied automatically around provider calls, and only to errors that
+//! [`Error::is_retryable`](crate::Error::is_retryable) reports as transient
+//! (rate limits, timeouts, and transport-level HTTP errors). Non-transient
+//! errors are returned immediately, so a bad request never sleeps.
+//!
+//! The delay for attempt `n` is `initial_delay * backoff_multiplier^n`, clamped
+//! to `max_delay`; with jitter enabled, a random offset of up to 50% of that
+//! value is added.
+
 use std::time::Duration;
 
 use rand::Rng;
@@ -8,7 +20,12 @@ use tracing::warn;
 ///
 /// Applied to retryable errors (`RateLimit`, `Timeout`, `Http`).
 ///
-/// # Example
+/// Attach it to a client with
+/// [`ClientBuilder::retry_config`](crate::ClientBuilder::retry_config) or to a
+/// single request with
+/// [`RequestBuilder::retry_config`](crate::RequestBuilder::retry_config).
+///
+/// # Examples
 ///
 /// ```rust
 /// use std::time::Duration;
