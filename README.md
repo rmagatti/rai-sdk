@@ -1,6 +1,17 @@
 # rai-sdk
 
+[![crates.io](https://img.shields.io/crates/v/rai-sdk.svg)](https://crates.io/crates/rai-sdk)
+[![docs.rs](https://img.shields.io/docsrs/rai-sdk)](https://docs.rs/rai-sdk)
+[![CI](https://github.com/rmagatti/rai-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/rmagatti/rai-sdk/actions/workflows/ci.yml)
+[![license](https://img.shields.io/crates/l/rai-sdk.svg)](#license)
+[![MSRV](https://img.shields.io/badge/MSRV-1.86-blue.svg)](https://blog.rust-lang.org/2025/04/03/Rust-1.86.0.html)
+
 `rai-sdk` is a Rust SDK for building backend AI workflows across OpenAI, Anthropic, and OpenRouter. It provides typed model selection, typestate request builders, structured output validation, streaming, retry/backoff, multimodal prompts, and automatic tool execution loops.
+
+- **API reference**: <https://docs.rs/rai-sdk>
+- **Guide**: <https://rmagatti.github.io/rai-sdk/>
+
+> **Project status:** early and pre-1.0. The crate is usable today, but the public API may change in breaking ways before `1.0`. Pin an exact version if you need stability.
 
 ## Features
 
@@ -14,23 +25,35 @@
 
 ## Installation
 
-Add the SDK to your `Cargo.toml`:
+```sh
+cargo add rai-sdk
+```
+
+Or add it to your `Cargo.toml` directly, along with the crates the examples below use:
 
 ```toml
 [dependencies]
-rai-sdk = { path = "path/to/rai-sdk" }
+rai-sdk = "0.1"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 futures = "0.3"
 ```
 
-Provider features are enabled by default:
+The minimum supported Rust version is **1.86**.
+
+### Feature flags
+
+All three providers are enabled by default. Opt out to compile only what you use:
 
 ```toml
-[features]
-default = ["openai", "anthropic", "openrouter"]
+[dependencies]
+rai-sdk = { version = "0.1", default-features = false, features = ["anthropic"] }
 ```
+
+- `openai` — OpenAI Chat Completions
+- `anthropic` — Anthropic Messages
+- `openrouter` — OpenRouter (aggregates many vendors)
 
 ## Configuration
 
@@ -338,3 +361,27 @@ cargo run --example tool_calling
 - `generate_structured()` may use tools before producing typed output. `generate_structured_once()` ignores configured tools.
 - Streaming with registered tools is intentionally rejected by the raw streaming API.
 - Provider availability is based on enabled Cargo features and configured credentials.
+
+## Documentation
+
+- [API reference on docs.rs](https://docs.rs/rai-sdk) — every public type and method.
+- [Guide](https://rmagatti.github.io/rai-sdk/) — task-oriented chapters on configuration, providers, structured output, tool calling, streaming, and retries.
+
+## Contributing
+
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for local setup, the commands CI runs, and the testing policy — the test suite is fully offline and must never require API credentials.
+
+Please also read our [Code of Conduct](CODE_OF_CONDUCT.md). To report a security issue, follow [SECURITY.md](SECURITY.md) rather than opening a public issue.
+
+## License
+
+Licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or <http://www.apache.org/licenses/LICENSE-2.0>)
+- MIT license ([LICENSE-MIT](LICENSE-MIT) or <http://opensource.org/licenses/MIT>)
+
+at your option.
+
+### Contribution
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in the work by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions.

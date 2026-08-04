@@ -1,0 +1,19 @@
+[book]
+title = "rai-sdk Guide"
+authors = ["Ronnie Andrew Magatti"]
+description = "Guide for rai-sdk, a unified Rust SDK for OpenAI, Anthropic, and OpenRouter."
+language = "en"
+src = "src"
+
+[output.html]
+default-theme = "rust"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/rmagatti/rai-sdk"
+edit-url-template = "https://github.com/rmagatti/rai-sdk/edit/main/docs/{path}"
+
+[output.html.search]
+enable = true
+
+[output.html.fold]
+enable = true
+level = 1
