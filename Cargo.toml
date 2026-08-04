@@ -2,10 +2,26 @@
 name = "rai-sdk"
 version = "0.1.0"
 edition = "2024"
-description = "Rust AI SDK — unified client for OpenAI and Anthropic with tool calling and streaming"
-license = "MIT"
-keywords = ["ai", "openai", "anthropic", "claude", "llm", "tool-calling", "streaming"]
+rust-version = "1.85"
+authors = ["Ronnie Andrew Magatti <ronniemagatti@gmail.com>"]
+description = "Rust AI SDK — unified client for OpenAI, Anthropic, and OpenRouter with typed models, structured output, tool calling, and streaming"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/rmagatti/rai-sdk"
+homepage = "https://rmagatti.github.io/rai-sdk/"
+documentation = "https://docs.rs/rai-sdk"
+keywords = ["ai", "llm", "openai", "anthropic", "openrouter"]
 categories = ["api-bindings", "asynchronous"]
+exclude = [
+    "/.github/",
+    "/docs/",
+    "/target/",
+    "/.gitignore",
+]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
 # Async runtime & streams
@@ -38,9 +54,20 @@ rand = "0.9"
 [dev-dependencies]
 tokio-test = "0.4"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Offline provider mocking and env-var isolation for tests
+wiremock = "0.6"
+serial_test = "4"
 
 [features]
 default = ["openai", "anthropic", "openrouter"]
 openai = []
 anthropic = []
 openrouter = []
+
+[lints.rust]
+missing_docs = "warn"
+unsafe_code = "forbid"
+
+[lints.rustdoc]
+broken_intra_doc_links = "deny"
+private_intra_doc_links = "warn"
