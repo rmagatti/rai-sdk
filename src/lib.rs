@@ -61,7 +61,40 @@
 //! The `openai`, `anthropic`, and `openrouter` features are all enabled by
 //! default and gate the corresponding provider support. Disable the defaults to
 //! compile against only the providers you use.
+//!
+//! # Further reading
+//!
+//! The [guide](https://rmagatti.github.io/rai-sdk/) covers each capability in
+//! task-oriented chapters. Its examples are compile-checked against this crate,
+//! so they stay in sync with the API you see here.
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
+
+// Compile-check every Rust snippet in the mdBook guide as a doctest, so the
+// published guide cannot drift away from the real API. This module only exists
+// while rustdoc is collecting doctests, so it adds nothing to the built crate or
+// to the rendered documentation.
+#[cfg(doctest)]
+mod guide {
+    macro_rules! chapter {
+        ($name:ident, $path:literal) => {
+            #[doc = include_str!($path)]
+            pub struct $name;
+        };
+    }
+
+    chapter!(Introduction, "../docs/src/introduction.md");
+    chapter!(Installation, "../docs/src/installation.md");
+    chapter!(Quickstart, "../docs/src/quickstart.md");
+    chapter!(Configuration, "../docs/src/configuration.md");
+    chapter!(ProvidersAndModels, "../docs/src/providers-and-models.md");
+    chapter!(StructuredOutput, "../docs/src/structured-output.md");
+    chapter!(ToolCalling, "../docs/src/tool-calling.md");
+    chapter!(Streaming, "../docs/src/streaming.md");
+    chapter!(MultimodalPrompts, "../docs/src/multimodal-prompts.md");
+    chapter!(RetriesAndErrors, "../docs/src/retries-and-errors.md");
+    chapter!(Examples, "../docs/src/examples.md");
+    chapter!(Contributing, "../docs/src/contributing.md");
+}
 
 pub mod client;
 pub mod config;

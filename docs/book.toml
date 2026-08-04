@@ -5,6 +5,9 @@ description = "Guide for rai-sdk, a unified Rust SDK for OpenAI, Anthropic, and 
 language = "en"
 src = "src"
 
+[rust]
+edition = "2024"
+
 [output.html]
 default-theme = "rust"
 preferred-dark-theme = "navy"

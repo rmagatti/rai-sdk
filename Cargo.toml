@@ -14,10 +14,12 @@ keywords = ["ai", "llm", "openai", "anthropic", "openrouter"]
 categories = ["api-bindings", "asynchronous"]
 exclude = [
     "/.github/",
-    "/docs/",
     "/target/",
     "/.gitignore",
 ]
+# Note: `docs/` (the mdBook guide source) is intentionally packaged. Guide
+# chapters are included as doctests under `cfg(doctest)`, so shipping them keeps
+# `cargo test --doc` working for consumers of the published crate.
 
 [package.metadata.docs.rs]
 all-features = true

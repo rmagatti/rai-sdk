@@ -7,27 +7,33 @@ A plain string prompt is shorthand. Underneath, a request carries a [`Prompt`](h
 ```rust
 use rai_sdk::{Message, Prompt};
 
-let prompt = Prompt::new()
-    .with_message(Message::system("You are a terse Rust expert."))
+let prompt = Prompt::single(Message::system("You are a terse Rust expert."))
     .with_message(Message::user("Why does the borrow checker reject this?"));
-# let _ = prompt;
+
+assert_eq!(prompt.system_message(), Some("You are a terse Rust expert."));
 ```
+
+`Prompt::single` starts from one message, `Prompt::new` takes a whole `Vec<Message>`, and `with_message` appends. A `Vec<Message>` also converts directly with `.into()`, so you rarely need to name `Prompt` at all.
 
 Roles are `System`, `User`, `Assistant`, and `Tool`. Providers differ in how they handle system prompts — Anthropic takes it as a separate top-level field rather than a message — and the SDK handles that translation, so you can express it as a message consistently.
 
 ## Multi-turn conversations
 
-Build history by appending messages in order:
+Build history by listing messages in order:
 
 ```rust
 use rai_sdk::{Message, Prompt};
 
-let prompt = Prompt::new()
-    .with_message(Message::user("What is a lifetime?"))
-    .with_message(Message::assistant("A lifetime names how long a reference is valid."))
-    .with_message(Message::user("Show me a case where elision fails."));
-# let _ = prompt;
+let prompt = Prompt::new(vec![
+    Message::user("What is a lifetime?"),
+    Message::assistant("A lifetime names how long a reference is valid."),
+    Message::user("Show me a case where elision fails."),
+]);
+
+assert_eq!(prompt.messages.len(), 3);
 ```
+
+If you already have the previous turns as [`ConversationTurn`](https://docs.rs/rai-sdk/latest/rai_sdk/message/struct.ConversationTurn.html) values, `Prompt::with_history` expands each turn into its user message, assistant message, and tool results for you — or use `generate_with_history` on the request builder.
 
 ## Images
 
