@@ -1,3 +1,16 @@
+//! Anthropic Messages provider.
+//!
+//! Talks to `POST {base_url}/messages` (default base URL
+//! `https://api.anthropic.com/v1`) using API version `2023-06-01`, supporting
+//! non-streaming and streaming generation, tool use, and JSON-Schema structured
+//! output. Text and image content blocks are translated; audio, video, and file
+//! blocks are not yet supported.
+//!
+//! Anthropic requires `max_tokens`, so a default of 8192 is used when the
+//! generation config does not set one. System messages are hoisted out of the
+//! message list into the request's top-level `system` field, and tool results
+//! are sent as user-role `tool_result` blocks.
+
 use std::pin::Pin;
 
 use bytes::Bytes;
@@ -39,7 +52,12 @@ impl std::fmt::Debug for AnthropicProvider {
 }
 
 impl AnthropicProvider {
-    /// Create a new Anthropic provider.
+    /// Create a new Anthropic provider from configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::ProviderNotConfigured`] if no Anthropic API key is
+    /// available, or [`Error::Config`] if the HTTP client cannot be built.
     pub fn new(config: &Config) -> Result<Self> {
         let api_key = config
             .anthropic_key()
@@ -63,6 +81,12 @@ impl AnthropicProvider {
     }
 
     /// Generate a completion (non-streaming).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Http`] if the request cannot be sent, and
+    /// [`Error::Auth`]/[`Error::RateLimit`]/[`Error::InvalidRequest`]/[`Error::Request`]
+    /// depending on the status code Anthropic replies with.
     #[instrument(skip(self, prompt, config))]
     pub async fn generate(
         &self,
@@ -105,6 +129,16 @@ impl AnthropicProvider {
     }
 
     /// Generate a completion with streaming.
+    ///
+    /// The returned stream yields
+    /// [`ProviderStreamEvent`](crate::provider::ProviderStreamEvent) values
+    /// assembled from Anthropic's server-sent events.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`AnthropicProvider::generate`] while opening
+    /// the stream. Transport failures encountered mid-stream are yielded as
+    /// [`Error::Stream`] items.
     #[instrument(skip(self, prompt, config))]
     pub async fn generate_stream(
         &self,
@@ -205,33 +239,28 @@ impl AnthropicProvider {
         let mut content_blocks = Vec::new();
 
         if message.is_multimodal() {
-            content_blocks.extend(
-                message
-                    .content_blocks
-                    .iter()
-                    .filter_map(|block| match block {
-                        CommonContentBlock::Text { text } => {
-                            Some(AnthropicContentBlock::Text { text: text.clone() })
+            content_blocks.extend(message.content_blocks.iter().map(|block| match block {
+                CommonContentBlock::Text { text } => {
+                    AnthropicContentBlock::Text { text: text.clone() }
+                }
+                CommonContentBlock::Image { source } => {
+                    let api_source = match source {
+                        CommonImageSource::Url { url } => {
+                            AnthropicImageSource::Url { url: url.clone() }
                         }
-                        CommonContentBlock::Image { source } => {
-                            let api_source = match source {
-                                CommonImageSource::Url { url } => {
-                                    AnthropicImageSource::Url { url: url.clone() }
-                                }
-                                CommonImageSource::Base64 { media_type, data } => {
-                                    AnthropicImageSource::Base64 {
-                                        media_type: media_type.clone(),
-                                        data: data.clone(),
-                                    }
-                                }
-                            };
-                            Some(AnthropicContentBlock::Image { source: api_source })
+                        CommonImageSource::Base64 { media_type, data } => {
+                            AnthropicImageSource::Base64 {
+                                media_type: media_type.clone(),
+                                data: data.clone(),
+                            }
                         }
-                        _ => unimplemented!(
-                            "Audio, Video, and File blocks are not yet supported for Anthropic"
-                        ),
-                    }),
-            );
+                    };
+                    AnthropicContentBlock::Image { source: api_source }
+                }
+                _ => unimplemented!(
+                    "Audio, Video, and File blocks are not yet supported for Anthropic"
+                ),
+            }));
         } else if !message.content.is_empty() {
             content_blocks.push(AnthropicContentBlock::Text {
                 text: message.content.clone(),

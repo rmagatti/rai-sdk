@@ -1,9 +1,49 @@
+//! Client-level configuration: credentials, endpoints, timeouts, retries.
+//!
+//! [`Config`] holds everything that is scoped to a client rather than to a
+//! single request. It can be built explicitly, loaded from the environment
+//! with [`Config::from_env`], or mixed: the getters fall back to environment
+//! variables when a field was not set programmatically, so an explicit value
+//! always wins over the environment.
+//!
+//! # Environment variables
+//!
+//! * `OPENAI_API_KEY`, `OPENAI_BASE_URL`
+//! * `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`
+//! * `OPENROUTER_API_KEY`, `OPENROUTER_BASE_URL`
+//! * `OPENROUTER_HTTP_REFERER` (or the legacy `OPENROUTER_APP_URL`),
+//!   `OPENROUTER_TITLE` (or the legacy `OPENROUTER_APP_TITLE`),
+//!   `OPENROUTER_CATEGORIES` (comma-separated)
+//! * `AI_TIMEOUT_SECONDS`
+//! * `AI_MAX_RETRIES`, `AI_RETRY_INITIAL_DELAY_MS`, `AI_RETRY_MAX_DELAY_MS`,
+//!   `AI_RETRY_BACKOFF_MULTIPLIER`, `AI_RETRY_JITTER`
+//!
+//! # Examples
+//!
+//! ```no_run
+//! use std::time::Duration;
+//! use rai_sdk::{Config, RetryConfig};
+//!
+//! // Start from the environment, then override selected values.
+//! let config = Config::from_env()
+//!     .with_timeout(30)
+//!     .with_default_max_tokens(2048)
+//!     .with_retry_config(RetryConfig::new().with_initial_delay(Duration::from_millis(250)));
+//!
+//! assert_eq!(config.timeout(), 30);
+//! ```
+
 use serde::{Deserialize, Serialize};
 
 use crate::error;
 use crate::retry::RetryConfig;
 
 /// Configuration for the AI SDK client.
+///
+/// Every field is optional. Unset credentials simply mean the corresponding
+/// provider is unavailable rather than an error at construction time; the
+/// failure surfaces as [`Error::ProviderNotConfigured`](crate::Error::ProviderNotConfigured)
+/// when that provider is actually used.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
     /// OpenAI API key.
@@ -71,8 +111,11 @@ impl Config {
 
     /// Create configuration from environment variables.
     ///
-    /// Reads `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `ANTHROPIC_API_KEY`,
-    /// `ANTHROPIC_BASE_URL`, and `AI_TIMEOUT_SECONDS`.
+    /// Reads every variable listed in the [module docs](self). Missing or
+    /// unparseable values are ignored, leaving the corresponding field unset
+    /// (and therefore at its default). The retry configuration is only
+    /// populated when at least one `AI_RETRY_*`/`AI_MAX_RETRIES` variable was
+    /// recognized.
     pub fn from_env() -> Self {
         let mut config = Self::new();
 
@@ -161,51 +204,62 @@ impl Config {
 
     // ── Builder methods ──
 
+    /// Set the OpenAI API key.
     pub fn with_openai_key(mut self, key: impl Into<String>) -> Self {
         self.openai_api_key = Some(key.into());
         self
     }
 
+    /// Set the OpenAI base URL, for proxies or Azure OpenAI deployments.
     pub fn with_openai_base_url(mut self, url: impl Into<String>) -> Self {
         self.openai_base_url = Some(url.into());
         self
     }
 
+    /// Set the Anthropic API key.
     pub fn with_anthropic_key(mut self, key: impl Into<String>) -> Self {
         self.anthropic_api_key = Some(key.into());
         self
     }
 
+    /// Set the Anthropic base URL, for proxies.
     pub fn with_anthropic_base_url(mut self, url: impl Into<String>) -> Self {
         self.anthropic_base_url = Some(url.into());
         self
     }
 
+    /// Set the OpenRouter API key.
     pub fn with_openrouter_key(mut self, key: impl Into<String>) -> Self {
         self.openrouter_api_key = Some(key.into());
         self
     }
 
+    /// Set the OpenRouter base URL, for proxies.
     pub fn with_openrouter_base_url(mut self, url: impl Into<String>) -> Self {
         self.openrouter_base_url = Some(url.into());
         self
     }
 
+    /// Set the OpenRouter `HTTP-Referer` attribution header.
     pub fn with_openrouter_http_referer(mut self, referer: impl Into<String>) -> Self {
         self.openrouter_http_referer = Some(referer.into());
         self
     }
 
+    /// Set the OpenRouter app title attribution header.
     pub fn with_openrouter_title(mut self, title: impl Into<String>) -> Self {
         self.openrouter_title = Some(title.into());
         self
     }
 
+    /// Set the OpenRouter app categories attribution header.
     pub fn with_openrouter_categories(mut self, categories: Vec<String>) -> Self {
         self.openrouter_categories = Some(categories);
         self
     }
 
+    /// Set the legacy OpenRouter app URL, which also sets the canonical
+    /// `HTTP-Referer` value.
     pub fn with_openrouter_app_url(mut self, url: impl Into<String>) -> Self {
         let url = url.into();
         self.openrouter_app_url = Some(url.clone());
@@ -213,6 +267,8 @@ impl Config {
         self
     }
 
+    /// Set the legacy OpenRouter app title, which also sets the canonical
+    /// title value.
     pub fn with_openrouter_app_title(mut self, title: impl Into<String>) -> Self {
         let title = title.into();
         self.openrouter_app_title = Some(title.clone());
@@ -220,16 +276,19 @@ impl Config {
         self
     }
 
+    /// Set the HTTP request timeout, in seconds.
     pub fn with_timeout(mut self, seconds: u64) -> Self {
         self.timeout_seconds = Some(seconds);
         self
     }
 
+    /// Set the default `max_tokens` used when a request does not specify one.
     pub fn with_default_max_tokens(mut self, max_tokens: i32) -> Self {
         self.default_max_tokens = Some(max_tokens);
         self
     }
 
+    /// Set the retry policy applied to transient errors.
     pub fn with_retry_config(mut self, retry_config: RetryConfig) -> Self {
         self.retry_config = Some(retry_config);
         self
@@ -237,30 +296,40 @@ impl Config {
 
     // ── Getters with env-var fallback ──
 
+    /// The OpenAI API key, falling back to `OPENAI_API_KEY`.
     pub fn openai_key(&self) -> Option<String> {
         self.openai_api_key
             .clone()
             .or_else(|| std::env::var("OPENAI_API_KEY").ok())
     }
 
+    /// The Anthropic API key, falling back to `ANTHROPIC_API_KEY`.
     pub fn anthropic_key(&self) -> Option<String> {
         self.anthropic_api_key
             .clone()
             .or_else(|| std::env::var("ANTHROPIC_API_KEY").ok())
     }
 
+    /// The OpenRouter API key, falling back to `OPENROUTER_API_KEY`.
     pub fn openrouter_key(&self) -> Option<String> {
         self.openrouter_api_key
             .clone()
             .or_else(|| std::env::var("OPENROUTER_API_KEY").ok())
     }
 
+    /// The OpenRouter base URL, falling back to `OPENROUTER_BASE_URL`.
+    ///
+    /// `None` means the provider uses its built-in default endpoint.
     pub fn openrouter_base_url(&self) -> Option<String> {
         self.openrouter_base_url
             .clone()
             .or_else(|| std::env::var("OPENROUTER_BASE_URL").ok())
     }
 
+    /// The OpenRouter `HTTP-Referer` value.
+    ///
+    /// Resolution order: the explicit referer, the legacy app URL,
+    /// `OPENROUTER_HTTP_REFERER`, then `OPENROUTER_APP_URL`.
     pub fn openrouter_http_referer(&self) -> Option<String> {
         self.openrouter_http_referer
             .clone()
@@ -269,6 +338,10 @@ impl Config {
             .or_else(|| std::env::var("OPENROUTER_APP_URL").ok())
     }
 
+    /// The OpenRouter app title used for attribution headers.
+    ///
+    /// Resolution order: the explicit title, the legacy app title,
+    /// `OPENROUTER_TITLE`, then `OPENROUTER_APP_TITLE`.
     pub fn openrouter_title(&self) -> Option<String> {
         self.openrouter_title
             .clone()
@@ -277,6 +350,8 @@ impl Config {
             .or_else(|| std::env::var("OPENROUTER_APP_TITLE").ok())
     }
 
+    /// The OpenRouter app categories, falling back to the comma-separated
+    /// `OPENROUTER_CATEGORIES` variable. Empty lists are treated as unset.
     pub fn openrouter_categories(&self) -> Option<Vec<String>> {
         self.openrouter_categories.clone().or_else(|| {
             std::env::var("OPENROUTER_CATEGORIES")
@@ -286,24 +361,36 @@ impl Config {
         })
     }
 
+    /// Deprecated alias for [`Config::openrouter_http_referer`], kept for
+    /// callers written against the older attribution field names.
     pub fn openrouter_app_url(&self) -> Option<String> {
         self.openrouter_http_referer()
     }
 
+    /// Deprecated alias for [`Config::openrouter_title`], kept for callers
+    /// written against the older attribution field names.
     pub fn openrouter_app_title(&self) -> Option<String> {
         self.openrouter_title()
     }
 
+    /// The effective retry policy, or [`RetryConfig::default`] when unset.
     pub fn retry_config(&self) -> RetryConfig {
         self.retry_config.clone().unwrap_or_default()
     }
 
+    /// The effective HTTP timeout in seconds (defaults to 120).
     pub fn timeout(&self) -> u64 {
         self.timeout_seconds.unwrap_or(120)
     }
 
     // ── Validation ──
 
+    /// Check that OpenAI is usable.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Config`](crate::Error::Config) if no OpenAI API key is
+    /// set programmatically or in `OPENAI_API_KEY`.
     #[cfg(feature = "openai")]
     pub fn validate_openai(&self) -> error::Result<()> {
         if self.openai_key().is_none() {
@@ -315,6 +402,12 @@ impl Config {
         Ok(())
     }
 
+    /// Check that Anthropic is usable.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Config`](crate::Error::Config) if no Anthropic API key
+    /// is set programmatically or in `ANTHROPIC_API_KEY`.
     #[cfg(feature = "anthropic")]
     pub fn validate_anthropic(&self) -> error::Result<()> {
         if self.anthropic_key().is_none() {
@@ -326,6 +419,12 @@ impl Config {
         Ok(())
     }
 
+    /// Check that OpenRouter is usable.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Config`](crate::Error::Config) if no OpenRouter API key
+    /// is set programmatically or in `OPENROUTER_API_KEY`.
     #[cfg(feature = "openrouter")]
     pub fn validate_openrouter(&self) -> error::Result<()> {
         if self.openrouter_key().is_none() {

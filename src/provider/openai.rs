@@ -1,3 +1,14 @@
+//! OpenAI Chat Completions provider.
+//!
+//! Talks to `POST {base_url}/chat/completions` (default base URL
+//! `https://api.openai.com/v1`), supporting non-streaming and streaming
+//! generation, tool calling, JSON mode, and strict JSON-Schema structured
+//! output. Text and image content blocks are translated; audio, video, and file
+//! blocks are not yet supported.
+//!
+//! Reasoning (o-series) models do not accept `temperature`/`top_p`, so those
+//! fields are dropped automatically for them.
+
 use std::pin::Pin;
 
 use bytes::Bytes;
@@ -39,7 +50,10 @@ impl std::fmt::Debug for OpenAIProvider {
 impl OpenAIProvider {
     /// Create a new OpenAI provider from configuration.
     ///
-    /// Returns an error if the OpenAI API key is not configured.
+    /// # Errors
+    ///
+    /// Returns [`Error::ProviderNotConfigured`] if no OpenAI API key is
+    /// available, or [`Error::Config`] if the HTTP client cannot be built.
     pub fn new(config: &Config) -> Result<Self> {
         let api_key = config
             .openai_key()
@@ -63,6 +77,14 @@ impl OpenAIProvider {
     }
 
     /// Generate a completion (non-streaming).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Http`] if the request cannot be sent,
+    /// [`Error::Auth`]/[`Error::RateLimit`]/[`Error::InvalidRequest`]/[`Error::Request`]
+    /// depending on the status code OpenAI replies with, and [`Error::Request`]
+    /// if the response contains no choices or a tool call with unparseable
+    /// arguments.
     #[instrument(skip(self, prompt, config))]
     pub async fn generate(
         &self,
@@ -101,6 +123,17 @@ impl OpenAIProvider {
     }
 
     /// Generate a completion with streaming.
+    ///
+    /// The returned stream yields
+    /// [`ProviderStreamEvent`](crate::provider::ProviderStreamEvent) values and
+    /// ends when OpenAI sends its `[DONE]` sentinel. Unparseable SSE payloads
+    /// are logged and skipped rather than terminating the stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`OpenAIProvider::generate`] while opening
+    /// the stream. Transport failures encountered mid-stream are yielded as
+    /// [`Error::Stream`] items.
     #[instrument(skip(self, prompt, config))]
     pub async fn generate_stream(
         &self,
@@ -207,7 +240,7 @@ impl OpenAIProvider {
             model: model.as_str().to_string(),
             messages,
             stream: Some(stream),
-            stream_options: stream.then(|| OpenAIStreamOptions {
+            stream_options: stream.then_some(OpenAIStreamOptions {
                 include_usage: true,
             }),
             temperature: config.temperature,
