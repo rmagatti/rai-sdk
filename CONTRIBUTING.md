@@ -50,9 +50,10 @@ without noticing. Check the combinations CI checks:
 
 ```sh
 cargo test --no-default-features
-cargo test --no-default-features --features openai
-cargo test --no-default-features --features anthropic
-cargo test --no-default-features --features openrouter
+cargo test --no-default-features --features openai,rustls-tls
+cargo test --no-default-features --features anthropic,rustls-tls
+cargo test --no-default-features --features openrouter,rustls-tls
+cargo test --no-default-features --features openai,native-tls
 ```
 
 ### Examples
@@ -152,9 +153,9 @@ few surprises:
 | `msrv` | `cargo check --all-features --locked` on the toolchain declared as `rust-version` |
 | `package` | `cargo package --list --locked` then `cargo publish --dry-run --locked` |
 
-The `test` job runs on `ubuntu-latest` across `--all-features`,
-`--no-default-features`, and each provider feature alone, plus `--all-features`
-on `macos-latest`.
+The `test` job runs on `ubuntu-latest` across `--all-features`, a providerless
+`--no-default-features` build, each provider with rustls, and OpenAI with
+native-tls, plus `--all-features` on `macos-latest`.
 
 `Cargo.lock` is committed and CI uses `--locked`. If your change requires a
 dependency update, commit the resulting `Cargo.lock` along with it.

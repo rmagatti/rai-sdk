@@ -62,12 +62,44 @@
 //! default and gate the corresponding provider support. Disable the defaults to
 //! compile against only the providers you use.
 //!
+//! Enabling a provider also requires at least one TLS backend:
+//!
+//! - `rustls-tls` (default) needs no system OpenSSL, but builds `aws-lc-rs`,
+//!   which requires cmake and a C compiler.
+//! - `native-tls` uses the platform TLS stack instead, avoiding that build
+//!   requirement.
+//!
+//! Because a TLS backend is part of the default feature set, disabling default
+//! features means re-enabling one explicitly:
+//!
+//! ```toml
+//! rai-sdk = { version = "0.1", default-features = false, features = ["anthropic", "native-tls"] }
+//! ```
+//!
+//! Cargo features are additive, so dependency feature unification can enable
+//! both backends. That configuration is supported and uses rustls; select only
+//! `native-tls` as shown above to avoid compiling `aws-lc-rs`.
+//!
 //! # Further reading
 //!
 //! The [guide](https://rmagatti.github.io/rai-sdk/) covers each capability in
 //! task-oriented chapters. Its examples are compile-checked against this crate,
 //! so they stay in sync with the API you see here.
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
+
+// Catch a provider without a TLS backend at compile time. A featureless build
+// is valid because it cannot make provider requests and is still useful to
+// consumers that only need the crate's shared data types.
+#[cfg(all(
+    any(feature = "openai", feature = "anthropic", feature = "openrouter"),
+    not(any(feature = "rustls-tls", feature = "native-tls"))
+))]
+compile_error!(
+    "rai-sdk has a provider enabled but no TLS backend. \
+     This usually means `default-features = false` was set without re-enabling one. \
+     Add `rustls-tls` (the default), or `native-tls` if you cannot build aws-lc-rs, \
+     which requires cmake and a C compiler."
+);
 
 // Compile-check every Rust snippet in the mdBook guide as a doctest, so the
 // published guide cannot drift away from the real API. This module only exists

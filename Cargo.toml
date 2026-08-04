@@ -37,7 +37,18 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 # HTTP
-reqwest = { version = "0.13", features = ["json", "stream"] }
+#
+# `default-features = false` hands the TLS choice to this crate's `rustls-tls`
+# and `native-tls` features. reqwest's remaining defaults (`charset`, `http2`,
+# `system-proxy`) are re-listed explicitly, since dropping them would silently
+# lose HTTP/2 and system proxy support.
+reqwest = { version = "0.13", default-features = false, features = [
+    "json",
+    "stream",
+    "charset",
+    "http2",
+    "system-proxy",
+] }
 bytes = "1"
 
 # Error handling
@@ -48,7 +59,14 @@ tracing = "0.1"
 
 # Schema generation & validation
 schemars = "1.2"
-jsonschema = "0.49"
+# `default-features = false` drops `resolve-http` and `tls-aws-lc-rs`, which
+# would otherwise pull a second reqwest/rustls stack in with a hard-coded crypto
+# provider — defeating this crate's TLS feature choice and forcing a cmake/C
+# build even when `native-tls` is selected. It also means a schema `$ref` can no
+# longer trigger an outbound HTTP request. Schemas here are generated locally
+# from Rust types, so remote resolution is not needed. Internal `$ref`/`$defs`
+# resolution is unaffected.
+jsonschema = { version = "0.49", default-features = false }
 
 # Retry jitter
 rand = "0.10"
@@ -61,10 +79,22 @@ wiremock = "0.6"
 serial_test = "4"
 
 [features]
-default = ["openai", "anthropic", "openrouter"]
+default = ["openai", "anthropic", "openrouter", "rustls-tls"]
+
+# Providers.
 openai = []
 anthropic = []
 openrouter = []
+
+# TLS backend. A provider requires at least one; a featureless, providerless
+# build needs neither. If feature unification enables both, rai-sdk uses rustls.
+#
+# `rustls-tls` is the default and needs no system OpenSSL, but builds
+# `aws-lc-rs`, which requires cmake and a C compiler. `native-tls` uses the
+# platform TLS stack instead (Secure Transport on macOS, SChannel on Windows,
+# OpenSSL on Linux), which avoids that build requirement.
+rustls-tls = ["reqwest/rustls"]
+native-tls = ["reqwest/native-tls"]
 
 [lints.rust]
 missing_docs = "warn"

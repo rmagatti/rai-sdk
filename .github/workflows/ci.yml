@@ -65,22 +65,31 @@ jobs:
             features: --all-features
           # Feature-gating regressions: the crate must build and test with no
           # providers at all, and with each provider enabled on its own.
+          #
+          # Providerless builds need no TLS implementation. Every combination
+          # that enables a provider names its backend explicitly.
           - os: ubuntu-latest
-            label: no default features
+            label: no providers
             slug: none
             features: --no-default-features
           - os: ubuntu-latest
             label: openai only
             slug: openai
-            features: --no-default-features --features openai
+            features: --no-default-features --features openai,rustls-tls
           - os: ubuntu-latest
             label: anthropic only
             slug: anthropic
-            features: --no-default-features --features anthropic
+            features: --no-default-features --features anthropic,rustls-tls
           - os: ubuntu-latest
             label: openrouter only
             slug: openrouter
-            features: --no-default-features --features openrouter
+            features: --no-default-features --features openrouter,rustls-tls
+          # The alternative TLS backend, which must keep working for consumers
+          # who cannot build aws-lc-rs.
+          - os: ubuntu-latest
+            label: native-tls
+            slug: native-tls
+            features: --no-default-features --features openai,native-tls
           # Second platform, primary feature set.
           - os: macos-latest
             label: all features

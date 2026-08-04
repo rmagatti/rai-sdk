@@ -30,6 +30,25 @@ pub use openrouter::OpenRouterProvider;
 
 use crate::message::Usage;
 
+/// Build the HTTP client with a deterministic TLS backend.
+///
+/// Cargo features are additive, so a downstream dependency can enable both
+/// reqwest backends even when this crate requested only one. reqwest 0.13
+/// otherwise prefers native-tls in that situation. rai-sdk keeps its documented
+/// rustls default by selecting rustls explicitly whenever it is available.
+#[cfg(any(feature = "openai", feature = "anthropic", feature = "openrouter"))]
+pub(crate) fn http_client_builder() -> reqwest::ClientBuilder {
+    let builder = reqwest::Client::builder();
+
+    #[cfg(feature = "rustls-tls")]
+    let builder = builder.tls_backend_rustls();
+
+    #[cfg(all(not(feature = "rustls-tls"), feature = "native-tls"))]
+    let builder = builder.tls_backend_native();
+
+    builder
+}
+
 /// A low-level event decoded from a provider's server-sent event stream.
 ///
 /// This is the raw shape yielded by

@@ -35,6 +35,7 @@
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(any(feature = "openai", feature = "anthropic", feature = "openrouter"))]
 use crate::error;
 use crate::retry::RetryConfig;
 

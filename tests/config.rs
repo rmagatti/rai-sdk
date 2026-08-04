@@ -19,7 +19,10 @@ mod common;
 
 use std::time::Duration;
 
-use rai_sdk::{Config, Error, RetryConfig};
+use rai_sdk::{Config, RetryConfig};
+
+#[cfg(any(feature = "openai", feature = "anthropic", feature = "openrouter"))]
+use rai_sdk::Error;
 
 // ── Pure builder behavior (no environment involved) ────────────────────────
 
@@ -119,6 +122,7 @@ fn config_serialization_omits_unset_optional_fields() {
 
 // ── Missing credentials produce errors, not panics ─────────────────────────
 
+#[cfg(any(feature = "openai", feature = "anthropic", feature = "openrouter"))]
 #[test]
 fn validation_reports_a_config_error_when_no_key_is_available() {
     if !common::in_env_child() {
@@ -189,6 +193,9 @@ fn a_client_without_credentials_builds_but_exposes_no_providers() {
     // Client construction must not fail or panic when nothing is configured —
     // the failure surfaces later, per request.
     let client = rai_sdk::Client::new(Config::new()).expect("client should build without keys");
+
+    #[cfg(not(any(feature = "openai", feature = "anthropic", feature = "openrouter")))]
+    drop(client);
 
     #[cfg(feature = "openai")]
     assert!(!client.is_provider_available(rai_sdk::ProviderKind::OpenAI));

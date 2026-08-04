@@ -23,6 +23,14 @@ Initial public release of the SDK. Everything below is new.
   targeting OpenAI, Anthropic, and OpenRouter, so switching provider is a change
   of model rather than a change of code. Each provider sits behind its own Cargo
   feature (`openai`, `anthropic`, `openrouter`), all enabled by default.
+- **Selectable TLS backend.** `rustls-tls` (default) or `native-tls`, so
+  consumers who cannot build `aws-lc-rs` — which needs cmake and a C compiler —
+  can use the platform TLS stack instead. Enabling a provider with neither
+  fails the build with an explanatory message; a providerless build needs no
+  TLS backend. If feature unification enables both, rai-sdk uses rustls.
+  `jsonschema`'s default HTTP schema resolution is disabled so it
+  cannot pull a second TLS stack with a hard-coded crypto provider, which also
+  means a schema `$ref` can never trigger an outbound request.
 - **Typed models.** A `Model` enum with per-provider variants
   (`OpenAIModel`, `AnthropicModel`, `OpenRouterModel`) and convenience
   constructors such as `Model::gpt4o_mini()`, `Model::claude_sonnet_46()`, and

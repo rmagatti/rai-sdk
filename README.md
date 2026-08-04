@@ -44,16 +44,35 @@ The minimum supported Rust version is **1.86**.
 
 ### Feature flags
 
-All three providers are enabled by default. Opt out to compile only what you use:
-
-```toml
-[dependencies]
-rai-sdk = { version = "0.1", default-features = false, features = ["anthropic"] }
-```
+Providers (all enabled by default):
 
 - `openai` — OpenAI Chat Completions
 - `anthropic` — Anthropic Messages
 - `openrouter` — OpenRouter (aggregates many vendors)
+
+TLS backend (at least one required when a provider is enabled):
+
+- `rustls-tls` (default) — no system OpenSSL needed, but builds `aws-lc-rs`, which requires **cmake and a C compiler**
+- `native-tls` — uses the platform TLS stack and avoids building `aws-lc-rs`/cmake (Linux needs OpenSSL development files)
+
+Since the TLS backend is part of the default feature set, turning defaults off means naming one explicitly:
+
+```toml
+[dependencies]
+rai-sdk = { version = "0.1", default-features = false, features = ["anthropic", "rustls-tls"] }
+```
+
+Building in a minimal container without cmake? Use `native-tls` instead:
+
+```toml
+[dependencies]
+rai-sdk = { version = "0.1", default-features = false, features = ["anthropic", "native-tls"] }
+```
+
+Omitting both while enabling a provider fails the build with an explanatory
+message. A providerless `--no-default-features` build remains valid. If Cargo
+feature unification enables both TLS features, rai-sdk uses rustls; use the
+`default-features = false` form above to avoid compiling it.
 
 ## Configuration
 

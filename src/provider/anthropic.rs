@@ -68,7 +68,7 @@ impl AnthropicProvider {
             .clone()
             .unwrap_or_else(|| ANTHROPIC_API_URL.to_string());
 
-        let client = Client::builder()
+        let client = super::http_client_builder()
             .timeout(std::time::Duration::from_secs(config.timeout()))
             .build()
             .map_err(|e| Error::Config(format!("Failed to create HTTP client: {e}")))?;

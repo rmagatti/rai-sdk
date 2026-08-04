@@ -43,18 +43,57 @@ The MSRV is declared as `rust-version` in `Cargo.toml` and verified in CI, so it
 | `openai` | yes | OpenAI Chat Completions |
 | `anthropic` | yes | Anthropic Messages |
 | `openrouter` | yes | OpenRouter |
+| `rustls-tls` | yes | TLS via rustls |
+| `native-tls` | no | TLS via the platform stack |
 
-All three are on by default. To compile only one provider, turn the defaults off:
+To compile only one provider, turn the defaults off — but remember that the TLS
+backend is part of the default set, so you must name one:
 
 ```toml
 [dependencies]
-rai-sdk = { version = "0.1", default-features = false, features = ["anthropic"] }
+rai-sdk = { version = "0.1", default-features = false, features = ["anthropic", "rustls-tls"] }
 ```
 
-Two things are worth knowing about how features interact with configuration:
+Two things are worth knowing about how provider features interact with
+configuration:
 
 - A feature controls whether provider support is **compiled in**. Credentials control whether it is **usable at runtime**.
 - Requesting a provider whose feature is disabled fails with `Error::ProviderNotEnabled`. Requesting one that is compiled in but has no API key fails with `Error::ProviderNotConfigured`. The two are distinct so you can tell a build-configuration mistake from a deployment mistake.
+
+## Choosing a TLS backend
+
+At least one TLS backend must be enabled when any provider is enabled. Enabling
+a provider with neither is a build error with an explanatory message. A build
+with no providers and no TLS backend is valid for consumers that only need the
+shared data types.
+
+**`rustls-tls` (default)** needs no system OpenSSL, which makes Linux builds
+simpler. The cost is that it builds `aws-lc-rs`, which requires **cmake and a C
+compiler**. Most CI images have both; minimal containers often do not.
+
+**`native-tls`** uses the operating system's TLS stack — Security Framework on
+macOS, SChannel on Windows, OpenSSL on Linux — and avoids building `aws-lc-rs`
+with cmake. Choose it if your build environment lacks cmake, or if you want to
+honor the system trust store:
+
+```toml
+[dependencies]
+rai-sdk = { version = "0.1", default-features = false, features = ["anthropic", "native-tls"] }
+```
+
+On Linux, `native-tls` links against the system OpenSSL, so you will need its
+development package (`libssl-dev` on Debian and Ubuntu) instead.
+
+Cargo features are additive, so another dependency can cause both TLS backends
+to be compiled. rai-sdk explicitly uses rustls when both are available. To keep
+`aws-lc-rs` and cmake out of the dependency graph, disable default features and
+enable only `native-tls`, as in the example above.
+
+Note that this crate also disables `jsonschema`'s default HTTP schema
+resolution. Schemas are generated locally from your Rust types, so a schema
+`$ref` can never trigger an outbound request — which keeps the TLS choice
+meaningful and removes a class of request-forgery risk. Internal `$ref` and
+`$defs` resolution is unaffected.
 
 ## Verify the install
 

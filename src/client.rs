@@ -340,6 +340,9 @@ impl<ModelState> Client<ModelState> {
         config: &GenerationConfig,
         tool_definitions: Option<&[ToolDefinition]>,
     ) -> Result<Response> {
+        #[cfg(not(any(feature = "openai", feature = "anthropic", feature = "openrouter")))]
+        let _ = (prompt, config, tool_definitions);
+
         match model {
             #[cfg(feature = "openai")]
             Model::OpenAI(ref openai_model) => {
@@ -418,6 +421,9 @@ impl<ModelState> Client<ModelState> {
         config: &GenerationConfig,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<crate::provider::ProviderStreamEvent>> + Send>>>
     {
+        #[cfg(not(any(feature = "openai", feature = "anthropic", feature = "openrouter")))]
+        let _ = (prompt, config);
+
         match model {
             #[cfg(feature = "openai")]
             Model::OpenAI(ref openai_model) => {
