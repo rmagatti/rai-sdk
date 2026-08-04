@@ -1,0 +1,138 @@
+name: Release
+
+# Publishing is driven entirely by tags: pushing `v0.2.0` publishes 0.2.0.
+#
+# This workflow is intentionally inert until a `CARGO_REGISTRY_TOKEN`
+# repository secret exists. Without that secret the `verify` job still runs and
+# the `publish` job fails immediately with an explanatory message, so nothing is
+# ever half-published. The very first release is published manually.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  verify:
+    name: Verify release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check tag matches Cargo.toml version
+        id: version
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          manifest_version="$(sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' Cargo.toml | head -n 1)"
+          if [ -z "$manifest_version" ]; then
+            echo "::error file=Cargo.toml::could not read version from Cargo.toml"
+            exit 1
+          fi
+          if [ "$tag_version" != "$manifest_version" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} implies version ${tag_version} but Cargo.toml declares ${manifest_version}"
+            exit 1
+          fi
+          echo "Releasing version ${tag_version}"
+          echo "version=${tag_version}" >> "$GITHUB_OUTPUT"
+
+      - name: cargo fmt
+        run: cargo fmt --all --check
+
+      - name: cargo clippy
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
+
+      - name: cargo test
+        run: cargo test --all-features --locked --all-targets
+
+      - name: cargo test --doc
+        run: cargo test --all-features --locked --doc
+
+      - name: cargo publish --dry-run
+        run: cargo publish --dry-run --locked
+
+  publish:
+    name: Publish to crates.io
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Ensure a crates.io token is configured
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          if [ -z "${CARGO_REGISTRY_TOKEN}" ]; then
+            echo "::error::The CARGO_REGISTRY_TOKEN repository secret is not set, so this release cannot be published."
+            echo "Add a crates.io API token at Settings -> Secrets and variables -> Actions -> New repository secret,"
+            echo "name it CARGO_REGISTRY_TOKEN, then re-run this workflow."
+            exit 1
+          fi
+
+      - name: cargo publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --locked
+
+  github-release:
+    name: GitHub release
+    needs: [verify, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Extract release notes from CHANGELOG.md
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          if [ -f CHANGELOG.md ]; then
+            awk -v version="$VERSION" '
+              $0 ~ ("^## \\[" version "\\]") { capturing = 1; next }
+              capturing && /^## / { exit }
+              capturing { print }
+            ' CHANGELOG.md > release-notes.md
+          else
+            : > release-notes.md
+          fi
+
+          # Fall back to a pointer at the changelog if there is no matching
+          # section, or the section is empty.
+          if [ ! -s release-notes.md ] || ! grep -q '[^[:space:]]' release-notes.md; then
+            {
+              echo "See [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/main/CHANGELOG.md) for details."
+            } > release-notes.md
+          fi
+          cat release-notes.md
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "v${VERSION}" \
+            --notes-file release-notes.md \
+            --verify-tag
