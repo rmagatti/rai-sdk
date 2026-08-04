@@ -1,0 +1,189 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel superseded runs for the same pull request, but never cancel a run for
+# a push to `main` (those are the runs the badge and history depend on).
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: cargo fmt
+        run: cargo fmt --all --check
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo clippy
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
+
+  test:
+    name: Test (${{ matrix.label }} / ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Primary configuration.
+          - os: ubuntu-latest
+            label: all features
+            slug: all
+            features: --all-features
+          # Feature-gating regressions: the crate must build and test with no
+          # providers at all, and with each provider enabled on its own.
+          - os: ubuntu-latest
+            label: no default features
+            slug: none
+            features: --no-default-features
+          - os: ubuntu-latest
+            label: openai only
+            slug: openai
+            features: --no-default-features --features openai
+          - os: ubuntu-latest
+            label: anthropic only
+            slug: anthropic
+            features: --no-default-features --features anthropic
+          - os: ubuntu-latest
+            label: openrouter only
+            slug: openrouter
+            features: --no-default-features --features openrouter
+          # Second platform, primary feature set.
+          - os: macos-latest
+            label: all features
+            slug: all
+            features: --all-features
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: features-${{ matrix.slug }}
+
+      # The test suite is required to be fully offline and deterministic. No
+      # provider credentials are configured for this workflow on purpose, and
+      # this guard makes an accidental future addition fail loudly instead of
+      # letting tests quietly start making live API calls.
+      - name: Assert no provider credentials are present
+        run: |
+          status=0
+          for var in OPENAI_API_KEY ANTHROPIC_API_KEY OPENROUTER_API_KEY; do
+            if [ -n "${!var:-}" ]; then
+              echo "::error::$var is set. The test suite must pass with no provider credentials and must never make live API calls."
+              status=1
+            fi
+          done
+          exit "$status"
+
+      - name: cargo test
+        run: cargo test --locked ${{ matrix.features }} --all-targets
+
+      # `--all-targets` skips doctests, so run them separately.
+      - name: cargo test --doc
+        run: cargo test --locked ${{ matrix.features }} --doc
+
+  docs:
+    name: Docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo doc
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --no-deps --all-features --locked
+
+  msrv:
+    name: MSRV
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # Read the MSRV out of the manifest instead of hardcoding it here, so the
+      # declared `rust-version` and the version CI verifies can never drift.
+      - name: Read MSRV from Cargo.toml
+        id: msrv
+        run: |
+          version="$(sed -n 's/^rust-version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' Cargo.toml | head -n 1)"
+          if [ -z "$version" ]; then
+            echo "::error file=Cargo.toml::rust-version is not declared in Cargo.toml"
+            exit 1
+          fi
+          echo "Declared MSRV: $version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust ${{ steps.msrv.outputs.version }}
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: msrv-${{ steps.msrv.outputs.version }}
+
+      - name: cargo check
+        run: cargo check --all-features --locked
+
+  package:
+    name: Package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+
+      # Printed for visibility: makes it easy to spot files that should have
+      # been excluded from (or included in) the published package.
+      - name: cargo package --list
+        run: cargo package --list --locked
+
+      - name: cargo publish --dry-run
+        run: cargo publish --dry-run --locked
