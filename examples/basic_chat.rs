@@ -1,3 +1,11 @@
+//! Minimal chat completion against OpenAI.
+//!
+//! Requires `OPENAI_API_KEY`.
+//!
+//! ```sh
+//! cargo run --example basic_chat
+//! ```
+
 use rai_sdk::{ClientBuilder, Model};
 
 #[tokio::main]

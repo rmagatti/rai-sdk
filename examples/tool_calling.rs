@@ -1,3 +1,15 @@
+//! Automatic tool execution.
+//!
+//! Registers a typed tool and lets `generate` run the tool loop: the model
+//! requests the call, the SDK executes the handler, feeds the result back, and
+//! the model produces a final answer.
+//!
+//! Requires `OPENAI_API_KEY`.
+//!
+//! ```sh
+//! cargo run --example tool_calling
+//! ```
+
 use rai_sdk::{ClientBuilder, Model, Result, Tool, ToolContext, schemars::JsonSchema};
 use serde::{Deserialize, Serialize};
 use serde_json::json;

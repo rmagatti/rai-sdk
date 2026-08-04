@@ -332,7 +332,8 @@ fn prompt_round_trips_through_json_with_multimodal_and_tool_messages() {
     ]);
 
     let encoded = to_json(&prompt);
-    let decoded: Prompt = serde_json::from_value(encoded.clone()).expect("prompt should round-trip");
+    let decoded: Prompt =
+        serde_json::from_value(encoded.clone()).expect("prompt should round-trip");
 
     assert_eq!(to_json(&decoded), encoded);
     assert_eq!(decoded.messages.len(), 4);

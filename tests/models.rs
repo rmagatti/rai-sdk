@@ -93,7 +93,10 @@ fn curated_openrouter_constructors_map_to_expected_wire_ids() {
             Model::openrouter_claude_sonnet_4_5(),
             "anthropic/claude-sonnet-4.5",
         ),
-        (Model::openrouter_gemini_25_flash(), "google/gemini-2.5-flash"),
+        (
+            Model::openrouter_gemini_25_flash(),
+            "google/gemini-2.5-flash",
+        ),
         (Model::openrouter_deepseek_r1(), "deepseek/deepseek-r1"),
         (Model::openrouter_qwen3_coder(), "qwen/qwen3-coder"),
     ];

@@ -1,3 +1,17 @@
+//! The client and request builders that drive generation.
+//!
+//! [`ClientBuilder`] assembles configuration, a default model, and any shared
+//! tools into a [`Client`]. Each call to [`Client::request`] returns a
+//! [`RequestBuilder`], a typestate builder whose terminal methods only become
+//! available once the request has both a prompt and a model.
+//!
+//! The builder exposes four families of terminal operations: `generate` and
+//! `generate_once` for text, `generate_structured` and
+//! `generate_structured_once` for typed output, `stream` and
+//! `stream_accumulated` for streaming, and per-request overrides such as
+//! configuration, tools, and retry policy. The `_once` variants perform a single
+//! provider call and do not execute registered tools.
+
 use std::{any::type_name, marker::PhantomData, pin::Pin};
 
 use futures::{Stream, StreamExt};
