@@ -82,15 +82,38 @@ Match non-exhaustively (`_ => {}`) so new event kinds do not break your code.
 
 ## Streaming and tools
 
-The streaming methods **reject** requests when tools are registered, rather than silently ignoring them. Executing a tool loop requires sending follow-up requests, which is incompatible with handing you a single continuous stream. You get `Error::InvalidRequest`.
+The streaming methods **reject** requests that carry tools, rather than silently ignoring them, with `Error::InvalidRequest`. Executing a tool loop requires sending follow-up requests, which is incompatible with handing you a single continuous stream.
 
-One sharp edge: the check inspects the **client's** tools, not the resolved per-request tool set. So `.no_tools()` on the request does **not** make streaming work on a client that has tools registered — the request is still rejected. Treat streaming as a property of the client.
+The check uses the request's *effective* tool set, so one client can do both. Opt out per request to stream:
 
-Your options:
+```rust,no_run
+use rai_sdk::{ClientBuilder, Model};
 
-- Use `generate()` and accept non-incremental output.
-- Build a separate tool-free client for streaming, and keep the tool-enabled client for `generate()`.
-- Drive the loop yourself with `generate_once()`, executing calls between turns.
+# async fn run(tool: rai_sdk::Tool) -> Result<(), Box<dyn std::error::Error>> {
+let client = ClientBuilder::new()
+    .from_env()
+    .model(Model::gpt4o_mini())
+    .tool(tool)
+    .build()?;
+
+// Tools run here.
+let answer = client.request().prompt("Use a tool if needed.").generate().await?;
+
+// And this request streams, because it opts out of tools.
+let stream = client
+    .request()
+    .no_tools()
+    .prompt("Just write prose.")
+    .stream()
+    .await?;
+# let _ = (answer, stream);
+# Ok(())
+# }
+```
+
+The rule applies in both directions: adding a tool with `.tool(..)` on a request makes it non-streamable even if the client has no tools, instead of quietly dropping it.
+
+If you need incremental output *and* tool execution in one exchange, drive the loop yourself with `generate_once()`, executing calls between turns.
 
 ## Timeouts
 

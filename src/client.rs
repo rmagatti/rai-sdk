@@ -381,20 +381,20 @@ impl<ModelState> Client<ModelState> {
 
     /// Stream a completion for an explicit model and prompt.
     ///
-    /// Prefer [`RequestBuilder::stream`], which applies the client's defaults
-    /// and retry policy. This lower-level entry point is useful when you are
-    /// driving the model and prompt yourself.
+    /// Prefer [`RequestBuilder::stream`], which applies the client's defaults,
+    /// retry policy, and per-request tool overrides. This lower-level entry
+    /// point is useful when you are driving the model and prompt yourself.
     ///
     /// # Errors
     ///
-    /// - [`Error::InvalidRequest`] if **any** tool is registered on the client.
-    ///   Streaming cannot run a tool loop, so it refuses rather than silently
-    ///   dropping the tools. Note this inspects the client's tools;
-    ///   [`RequestBuilder::no_tools`] does not lift the restriction.
+    /// - [`Error::InvalidRequest`] if any tool is registered on this client,
+    ///   since streaming cannot run a tool loop. Because this method takes no
+    ///   request context, it can only consider the client's tools; use
+    ///   [`RequestBuilder::stream`] with [`RequestBuilder::no_tools`] to stream
+    ///   from a client that has tools registered.
     /// - [`Error::ProviderNotConfigured`] if the model's provider has no API key.
     /// - [`Error::ProviderNotEnabled`] if its Cargo feature is disabled.
     /// - A transport or provider error if the request itself fails.
-    #[instrument(skip(self, prompt, config))]
     pub async fn generate_stream(
         &self,
         model: Model,
@@ -402,12 +402,22 @@ impl<ModelState> Client<ModelState> {
         config: &GenerationConfig,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<crate::provider::ProviderStreamEvent>> + Send>>>
     {
-        if !self.tool_registry.is_empty() {
-            return Err(Error::InvalidRequest(
-                "Streaming with tools is not supported".into(),
-            ));
-        }
+        ensure_streamable(&self.tool_registry)?;
+        self.generate_stream_inner(model, prompt, config).await
+    }
 
+    /// Open a provider stream without considering tools.
+    ///
+    /// Callers are responsible for having already rejected tool-bearing
+    /// requests via [`ensure_streamable`].
+    #[instrument(skip(self, prompt, config))]
+    async fn generate_stream_inner(
+        &self,
+        model: Model,
+        prompt: &Prompt,
+        config: &GenerationConfig,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<crate::provider::ProviderStreamEvent>> + Send>>>
+    {
         match model {
             #[cfg(feature = "openai")]
             Model::OpenAI(ref openai_model) => {
@@ -761,6 +771,9 @@ impl<'a, PromptState, RequestModelState, ClientModelState>
     }
 
     /// Disable all tools for this request, including client defaults.
+    ///
+    /// Also the way to stream from a client that has tools registered, since the
+    /// streaming methods reject any request carrying tools.
     pub fn no_tools(mut self) -> Self {
         self.tool_override = ToolOverride::None;
         self
@@ -1087,10 +1100,9 @@ impl<'a, ClientModelState> RequestBuilder<'a, PromptReady, ModelReady, ClientMod
     ///
     /// # Errors
     ///
-    /// Returns an error when opening the stream fails, with the same causes as
-    /// [`Client::generate_stream`] — including [`Error::InvalidRequest`] if the
-    /// client has tools registered. Once the stream is open, individual items
-    /// may also be errors.
+    /// Same as [`stream`](Self::stream), including [`Error::InvalidRequest`]
+    /// when the request's effective tool set is non-empty. Once the stream is
+    /// open, individual items may also be errors.
     pub async fn generate_stream_events(
         self,
     ) -> Result<impl Stream<Item = Result<crate::message::StreamEvent>> + Send> {
@@ -1100,9 +1112,11 @@ impl<'a, ClientModelState> RequestBuilder<'a, PromptReady, ModelReady, ClientMod
             .as_ref()
             .expect("prompt-ready request builder must contain a prompt");
 
+        ensure_streamable(&resolved.tool_registry)?;
+
         let mut stream = crate::retry::with_retry(&resolved.retry_config, "stream", || {
             self.client
-                .generate_stream(resolved.model.clone(), prompt, &resolved.config)
+                .generate_stream_inner(resolved.model.clone(), prompt, &resolved.config)
         })
         .await?;
 
@@ -1193,13 +1207,16 @@ impl<'a, ClientModelState> RequestBuilder<'a, PromptReady, ModelReady, ClientMod
     ///
     /// # Errors
     ///
-    /// Opening the stream fails with the same causes as
-    /// [`Client::generate_stream`]. In particular it returns
-    /// [`Error::InvalidRequest`] if the **client** has any tool registered,
-    /// because streaming cannot run a tool loop. Note that
-    /// [`no_tools`](Self::no_tools) does not lift this restriction, since the
-    /// check inspects the client rather than the resolved request; build a
-    /// tool-free client if you need to stream.
+    /// Returns [`Error::InvalidRequest`] if the request would carry any tool,
+    /// because streaming cannot run a tool loop. This considers the request's
+    /// effective tool set, so [`no_tools`](Self::no_tools) lets you stream from
+    /// a client that has tools registered, and [`tool`](Self::tool) on the
+    /// request is rejected even when the client itself has none.
+    ///
+    /// Otherwise the same causes as [`Client::generate_stream`]:
+    /// [`Error::ProviderNotConfigured`], [`Error::ProviderNotEnabled`], or a
+    /// transport or provider failure. Once the stream is open, individual items
+    /// may also be errors.
     ///
     /// # Examples
     ///
@@ -1235,9 +1252,11 @@ impl<'a, ClientModelState> RequestBuilder<'a, PromptReady, ModelReady, ClientMod
             .as_ref()
             .expect("prompt-ready request builder must contain a prompt");
 
+        ensure_streamable(&resolved.tool_registry)?;
+
         crate::retry::with_retry(&resolved.retry_config, "stream", || {
             self.client
-                .generate_stream(resolved.model.clone(), prompt, &resolved.config)
+                .generate_stream_inner(resolved.model.clone(), prompt, &resolved.config)
         })
         .await
     }
@@ -1256,8 +1275,8 @@ impl<'a, ClientModelState> RequestBuilder<'a, PromptReady, ModelReady, ClientMod
     /// # Errors
     ///
     /// Same as [`stream`](Self::stream), including [`Error::InvalidRequest`]
-    /// when the client has tools registered, plus any error encountered while
-    /// consuming the stream.
+    /// when the request's effective tool set is non-empty, plus any error
+    /// encountered while consuming the stream.
     ///
     /// # Examples
     ///
@@ -1283,12 +1302,14 @@ impl<'a, ClientModelState> RequestBuilder<'a, PromptReady, ModelReady, ClientMod
             .as_ref()
             .expect("prompt-ready request builder must contain a prompt");
 
+        ensure_streamable(&resolved.tool_registry)?;
+
         let model_str = resolved.model.as_str().to_string();
         let provider = resolved.model.provider();
 
         let mut stream = crate::retry::with_retry(&resolved.retry_config, "stream", || {
             self.client
-                .generate_stream(resolved.model.clone(), prompt, &resolved.config)
+                .generate_stream_inner(resolved.model.clone(), prompt, &resolved.config)
         })
         .await?;
 
@@ -1325,6 +1346,23 @@ impl<'a, ClientModelState> RequestBuilder<'a, PromptReady, ModelReady, ClientMod
             finish_reason,
         })
     }
+}
+
+/// Reject a streaming request when tools are in play.
+///
+/// Streaming has no way to execute a tool loop, since that requires issuing
+/// follow-up requests. Failing loudly is better than quietly dropping tools the
+/// caller registered.
+fn ensure_streamable(tool_registry: &ToolRegistry) -> Result<()> {
+    if tool_registry.is_empty() {
+        return Ok(());
+    }
+
+    Err(Error::InvalidRequest(
+        "Streaming with tools is not supported. Use generate() to run tools, \
+         or no_tools() on the request to stream without them."
+            .into(),
+    ))
 }
 
 fn request_tool_definitions(
@@ -1642,9 +1680,9 @@ impl<ModelState> ClientBuilder<ModelState> {
 
     /// Register a tool that [`RequestBuilder::generate`] may auto-execute.
     ///
-    /// Client-level tools are available to every request. Note that registering
-    /// any tool makes the streaming methods unusable for this client; see
-    /// [`RequestBuilder::stream`].
+    /// Client-level tools are available to every request. Requests that stream
+    /// must opt out with [`RequestBuilder::no_tools`], since streaming cannot
+    /// run a tool loop; see [`RequestBuilder::stream`].
     pub fn tool(mut self, tool: Tool) -> Self {
         self.tools.push(tool);
         self
