@@ -40,8 +40,8 @@ fn collect_validation_issues(
     let mut issues: Vec<_> = validator
         .iter_errors(value)
         .map(|error| ToolArgumentIssue {
-            path: format_instance_path(&error.instance_path),
-            schema_path: error.schema_path.to_string(),
+            path: format_instance_path(error.instance_path()),
+            schema_path: error.schema_path().to_string(),
             message: error.to_string(),
         })
         .collect();
