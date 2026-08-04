@@ -7,6 +7,10 @@
 //! even on a client that has none.
 //!
 //! Every test is offline: streams are served by a local `wiremock` mock.
+//!
+//! The behavior under test is provider-independent, but the tests need a
+//! concrete provider to stream from, so the whole file is gated on `openai`.
+#![cfg(feature = "openai")]
 
 mod common;
 
