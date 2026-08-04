@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/rmagatti/rai-sdk/security/advisories/new
+    about: Report vulnerabilities privately. Never open a public issue for a security problem.
+  - name: Guide
+    url: https://rmagatti.github.io/rai-sdk/
+    about: Task-oriented documentation for configuration, tools, streaming, and structured output.
+  - name: API documentation
+    url: https://docs.rs/rai-sdk
+    about: Generated reference documentation for every public item.
