@@ -2,7 +2,7 @@
 name = "rai-sdk"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.86"
 authors = ["Ronnie Andrew Magatti <ronniemagatti@gmail.com>"]
 description = "Rust AI SDK — unified client for OpenAI, Anthropic, and OpenRouter with typed models, structured output, tool calling, and streaming"
 license = "MIT OR Apache-2.0"
