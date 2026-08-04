@@ -50,7 +50,45 @@ pub struct ModelMissing;
 #[doc(hidden)]
 pub struct ModelReady;
 
-/// Unified AI client supporting multiple providers.
+/// Unified AI client for OpenAI, Anthropic, and OpenRouter.
+///
+/// A client owns provider credentials and HTTP clients, an optional default
+/// model, default generation and retry settings, and any tools shared by every
+/// request. Build one once and reuse it: individual requests are cheap, but
+/// constructing a client initializes a client per configured provider.
+///
+/// Use [`ClientBuilder`] for the common path, or [`Client::new`] when you
+/// already have a [`Config`].
+///
+/// # Typestate
+///
+/// The `ModelState` parameter records whether a default model is present.
+/// [`ClientBuilder::model`] moves the builder into the model-ready state, and
+/// only a model-ready client hands out request builders that can call
+/// [`RequestBuilder::generate`] without naming a model. A client built without a
+/// default model is still fully usable — every request just has to call
+/// [`RequestBuilder::model`] first. Either way, a request missing a model is a
+/// compile error rather than a runtime one.
+///
+/// # Examples
+///
+/// ```no_run
+/// use rai_sdk::{ClientBuilder, Model};
+///
+/// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+/// let client = ClientBuilder::new()
+///     .from_env()
+///     .model(Model::gpt4o_mini())
+///     .build()?;
+///
+/// // Reuse the same client for many requests.
+/// for prompt in ["Define a trait.", "Define a lifetime."] {
+///     let response = client.request().prompt(prompt).generate().await?;
+///     println!("{}", response.text());
+/// }
+/// # Ok(())
+/// # }
+/// ```
 pub struct Client<ModelState = ModelMissing> {
     config: Config,
     default_model: Option<Model>,
@@ -89,7 +127,39 @@ impl<ModelState> std::fmt::Debug for Client<ModelState> {
 }
 
 impl Client<ModelMissing> {
-    /// Create a new AI client with the given configuration.
+    /// Create a client from an explicit [`Config`], with no default model.
+    ///
+    /// Every request from this client must select a model with
+    /// [`RequestBuilder::model`]. Use [`ClientBuilder`] instead if you want a
+    /// default model or client-level tools.
+    ///
+    /// A provider whose API key is missing is simply left uninitialized rather
+    /// than failing here; using it later returns
+    /// [`Error::ProviderNotConfigured`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a configured provider's HTTP client cannot be
+    /// constructed, for example because the request timeout is invalid.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use rai_sdk::{Client, Config, Model};
+    ///
+    /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+    /// let client = Client::new(Config::from_env())?;
+    ///
+    /// let response = client
+    ///     .request()
+    ///     .model(Model::gpt4o_mini())
+    ///     .prompt("Hello")
+    ///     .generate()
+    ///     .await?;
+    /// # println!("{}", response.text());
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn new(config: Config) -> Result<Self> {
         let default_retry_config = config.retry_config();
         Self::new_with_defaults(
@@ -102,11 +172,16 @@ impl Client<ModelMissing> {
     }
 
     /// Create a builder for configuring a client with defaults.
+    ///
+    /// Equivalent to [`ClientBuilder::new`].
     pub fn builder() -> ClientBuilder<ModelMissing> {
         ClientBuilder::new()
     }
 
-    /// Create a request builder for a single call.
+    /// Start a request.
+    ///
+    /// This client has no default model, so the returned builder requires
+    /// [`RequestBuilder::model`] before it will expose `generate` and friends.
     pub fn request(&self) -> RequestBuilder<'_, PromptMissing, ModelMissing, ModelMissing> {
         self.request_builder()
     }
@@ -304,7 +379,21 @@ impl<ModelState> Client<ModelState> {
         }
     }
 
-    /// Generate a completion with streaming.
+    /// Stream a completion for an explicit model and prompt.
+    ///
+    /// Prefer [`RequestBuilder::stream`], which applies the client's defaults
+    /// and retry policy. This lower-level entry point is useful when you are
+    /// driving the model and prompt yourself.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::InvalidRequest`] if **any** tool is registered on the client.
+    ///   Streaming cannot run a tool loop, so it refuses rather than silently
+    ///   dropping the tools. Note this inspects the client's tools;
+    ///   [`RequestBuilder::no_tools`] does not lift the restriction.
+    /// - [`Error::ProviderNotConfigured`] if the model's provider has no API key.
+    /// - [`Error::ProviderNotEnabled`] if its Cargo feature is disabled.
+    /// - A transport or provider error if the request itself fails.
     #[instrument(skip(self, prompt, config))]
     pub async fn generate_stream(
         &self,
@@ -356,7 +445,29 @@ impl<ModelState> Client<ModelState> {
         }
     }
 
-    /// Check if a provider is available.
+    /// Whether a provider is usable: its feature is enabled and it has
+    /// credentials.
+    ///
+    /// Use this to branch at runtime instead of discovering a missing key
+    /// through a failed request.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use rai_sdk::{ClientBuilder, Model, ProviderKind};
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let client = ClientBuilder::new().from_env().build()?;
+    ///
+    /// let model = if client.is_provider_available(ProviderKind::Anthropic) {
+    ///     Model::claude_sonnet_46()
+    /// } else {
+    ///     Model::gpt4o_mini()
+    /// };
+    /// # let _ = model;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn is_provider_available(&self, provider: ProviderKind) -> bool {
         match provider {
             #[cfg(feature = "openai")]
@@ -373,14 +484,20 @@ impl<ModelState> Client<ModelState> {
         }
     }
 
-    /// Get the configuration.
+    /// The configuration this client was built with.
+    ///
+    /// Note that the returned [`Config`] contains API keys; do not log it.
     pub fn config(&self) -> &Config {
         &self.config
     }
 }
 
 impl Client<ModelReady> {
-    /// Create a request builder that inherits this client's default model.
+    /// Start a request that inherits this client's default model.
+    ///
+    /// Because the model is already known, the returned builder only needs a
+    /// prompt before you can call [`RequestBuilder::generate`]. Override the
+    /// model per request with [`RequestBuilder::model`].
     pub fn request(&self) -> RequestBuilder<'_, PromptMissing, ModelReady, ModelReady> {
         self.request_builder()
     }
@@ -407,6 +524,58 @@ pub struct PromptMissing;
 pub struct PromptReady;
 
 /// Builder for a single AI generation request.
+///
+/// Created by [`Client::request`]. Chain overrides, supply a prompt, then call
+/// one terminal method. Anything you do not override is inherited from the
+/// client.
+///
+/// # Terminal methods
+///
+/// | Method | Returns | Runs registered tools |
+/// | --- | --- | --- |
+/// | [`generate`](Self::generate) | [`Response`] | yes, until a final answer |
+/// | [`generate_once`](Self::generate_once) | [`Response`] | no, one provider call |
+/// | [`generate_structured`](Self::generate_structured) | [`StructuredOutput<T>`] | yes |
+/// | [`generate_structured_once`](Self::generate_structured_once) | [`StructuredOutput<T>`] | no |
+/// | [`generate_with_history`](Self::generate_with_history) | [`Response`] | yes |
+/// | [`stream`](Self::stream) | stream of provider events | not supported |
+/// | [`generate_stream_events`](Self::generate_stream_events) | stream of high-level events | not supported |
+/// | [`stream_accumulated`](Self::stream_accumulated) | [`Response`] | not supported |
+///
+/// Methods ending in `_once` make exactly one provider call and never execute
+/// tools.
+///
+/// # Typestate
+///
+/// The terminal methods only exist once the builder has both a prompt and a
+/// model, so an incomplete request cannot be sent. A model comes either from
+/// the client's default or from [`model`](Self::model); the prompt comes from
+/// [`prompt`](Self::prompt). If `generate` appears to be missing, one of those
+/// two is absent.
+///
+/// # Examples
+///
+/// ```no_run
+/// use rai_sdk::{ClientBuilder, GenerationConfig, Model};
+///
+/// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+/// let client = ClientBuilder::new()
+///     .from_env()
+///     .model(Model::gpt4o_mini())
+///     .build()?;
+///
+/// let response = client
+///     .request()
+///     .model(Model::claude_sonnet_46())                       // override the model
+///     .config(GenerationConfig::new().with_temperature(0.2))   // override sampling
+///     .no_tools()                                             // ignore client tools
+///     .prompt("Summarize the borrow checker.")
+///     .generate()
+///     .await?;
+/// # println!("{}", response.text());
+/// # Ok(())
+/// # }
+/// ```
 pub struct RequestBuilder<
     'a,
     PromptState = PromptMissing,
@@ -471,7 +640,10 @@ impl<'a, PromptState, RequestModelState, ClientModelState>
         }
     }
 
-    /// Override the model for this request.
+    /// Override the model, and therefore the provider, for this request.
+    ///
+    /// Takes precedence over the client's default model. Calling this makes the
+    /// builder model-ready even if the client has no default.
     pub fn model(
         mut self,
         model: Model,
@@ -481,6 +653,9 @@ impl<'a, PromptState, RequestModelState, ClientModelState>
     }
 
     /// Override generation settings for this request.
+    ///
+    /// Replaces the client's default [`GenerationConfig`] wholesale rather than
+    /// merging with it, so include every setting you want.
     pub fn config(mut self, config: GenerationConfig) -> Self {
         self.config = Some(config);
         self
@@ -499,6 +674,29 @@ impl<'a, PromptState, RequestModelState, ClientModelState>
     }
 
     /// Set the prompt or conversation history for this request.
+    ///
+    /// Accepts anything convertible into a [`Prompt`]: a `&str`, a `String`, a
+    /// single [`Message`], a `Vec<Message>`, or a full `Prompt` with multi-turn
+    /// history and multimodal content.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rai_sdk::{Message, Prompt};
+    ///
+    /// // Each of these is accepted by `prompt()`.
+    /// let _: Prompt = "a plain string".into();
+    /// let _: Prompt = Message::user("a single message").into();
+    /// let _: Prompt = vec![
+    ///     Message::system("You are terse."),
+    ///     Message::user("Explain lifetimes."),
+    /// ]
+    /// .into();
+    ///
+    /// // Or build one up explicitly.
+    /// let _ = Prompt::single(Message::system("You are terse."))
+    ///     .with_message(Message::user("Explain lifetimes."));
+    /// ```
     pub fn prompt<P>(
         mut self,
         prompt: P,
@@ -614,7 +812,57 @@ impl<'a, PromptState, ClientModelState>
 }
 
 impl<'a, ClientModelState> RequestBuilder<'a, PromptReady, ModelReady, ClientModelState> {
-    /// Generate a response and automatically execute tool calls.
+    /// Generate a response, automatically executing any tool calls the model
+    /// requests.
+    ///
+    /// This is the method you usually want. If tools are registered, it runs the
+    /// loop — send, execute requested tools, append results, send again — until
+    /// the model answers without asking for more tools. With no tools
+    /// registered, it is a single call.
+    ///
+    /// Transient failures are retried according to the effective
+    /// [`RetryConfig`].
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::ProviderNotConfigured`] if the provider has no API key, or
+    ///   [`Error::ProviderNotEnabled`] if its Cargo feature is off.
+    /// - [`Error::ToolLoopLimitExceeded`] if the model keeps requesting tools
+    ///   past [`GenerationConfig::with_max_tool_rounds`] (default 8).
+    /// - [`Error::ToolNotFound`] if the model requests a tool that is not
+    ///   registered.
+    /// - [`Error::RateLimit`], [`Error::Timeout`], or [`Error::Http`] if the
+    ///   request still fails after retries.
+    /// - [`Error::Auth`], [`Error::InvalidRequest`], [`Error::ContentFiltered`],
+    ///   or [`Error::Request`] for provider-side rejections.
+    ///
+    /// Note that a tool handler returning an error does *not* fail this call:
+    /// the error is passed back to the model as tool content so it can react.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use rai_sdk::{ClientBuilder, Model};
+    ///
+    /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+    /// let client = ClientBuilder::new()
+    ///     .from_env()
+    ///     .model(Model::gpt4o_mini())
+    ///     .build()?;
+    ///
+    /// let response = client
+    ///     .request()
+    ///     .prompt("Name one Rust testing crate.")
+    ///     .generate()
+    ///     .await?;
+    ///
+    /// println!("{}", response.text());
+    /// if let Some(usage) = &response.usage {
+    ///     println!("tokens: {:?}", usage.total_tokens);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn generate(self) -> Result<Response> {
         let resolved = self.resolve()?;
         let prompt = self
@@ -632,7 +880,40 @@ impl<'a, ClientModelState> RequestBuilder<'a, PromptReady, ModelReady, ClientMod
             .await
     }
 
-    /// Generate a single provider response without auto-running tools.
+    /// Make exactly one provider call, without executing tools.
+    ///
+    /// Tool *definitions* are still advertised to the model, so the response may
+    /// contain tool calls — they are returned to you on the response messages
+    /// instead of being executed. Use this when you want to inspect, gate, or
+    /// approve tool calls, or drive the loop yourself.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`generate`](Self::generate), except it cannot return
+    /// [`Error::ToolLoopLimitExceeded`] or [`Error::ToolNotFound`], since no
+    /// tool is executed.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use rai_sdk::{ClientBuilder, Model};
+    ///
+    /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let client = ClientBuilder::new().from_env().model(Model::gpt4o_mini()).build()?;
+    /// let response = client
+    ///     .request()
+    ///     .prompt("What is the weather in Paris?")
+    ///     .generate_once()
+    ///     .await?;
+    ///
+    /// for message in &response.messages {
+    ///     for call in &message.tool_calls {
+    ///         println!("requested {} with {}", call.name, call.arguments);
+    ///     }
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn generate_once(self) -> Result<Response> {
         let resolved = self.resolve()?;
         let prompt = self
@@ -654,6 +935,48 @@ impl<'a, ClientModelState> RequestBuilder<'a, PromptReady, ModelReady, ClientMod
     }
 
     /// Generate a response that must match the Rust type `T`.
+    ///
+    /// A JSON Schema is generated from `T` and sent to the provider, the
+    /// response is validated against that schema, and only then deserialized.
+    /// Tools still run as in [`generate`](Self::generate).
+    ///
+    /// `T` must be non-recursive: recursive types force `$ref`/`$defs`, which
+    /// strict providers reject. See
+    /// [`GenerationConfig::with_json_schema_for`].
+    ///
+    /// # Errors
+    ///
+    /// Everything [`generate`](Self::generate) can return, plus
+    /// [`Error::StructuredOutput`] if the response is empty, is not valid JSON,
+    /// fails schema validation, or does not deserialize into `T`.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use rai_sdk::{ClientBuilder, JsonSchema, Model};
+    /// use serde::Deserialize;
+    ///
+    /// #[derive(Debug, Deserialize, JsonSchema)]
+    /// struct Summary {
+    ///     title: String,
+    ///     bullet_points: Vec<String>,
+    /// }
+    ///
+    /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let client = ClientBuilder::new().from_env().model(Model::gpt4o_mini()).build()?;
+    /// let structured = client
+    ///     .request()
+    ///     .prompt("Summarize the Rust ownership model.")
+    ///     .generate_structured::<Summary>()
+    ///     .await?;
+    ///
+    /// println!("{}", structured.output.title);
+    /// for point in &structured.output.bullet_points {
+    ///     println!("- {point}");
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn generate_structured<T>(self) -> Result<StructuredOutput<T>>
     where
         T: DeserializeOwned + JsonSchema,
@@ -678,7 +1001,17 @@ impl<'a, ClientModelState> RequestBuilder<'a, PromptReady, ModelReady, ClientMod
         parse_structured_output(response)
     }
 
-    /// Generate a single structured provider response without auto-running tools.
+    /// Make exactly one provider call and parse the result as `T`.
+    ///
+    /// Unlike [`generate_once`](Self::generate_once), configured tools are not
+    /// even advertised to the model: they are ignored entirely (and a log line
+    /// records that). Use this for a pure transformation on a client that
+    /// happens to have tools registered.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`generate_structured`](Self::generate_structured), minus the
+    /// tool-loop errors.
     pub async fn generate_structured_once<T>(self) -> Result<StructuredOutput<T>>
     where
         T: DeserializeOwned + JsonSchema,
@@ -708,7 +1041,16 @@ impl<'a, ClientModelState> RequestBuilder<'a, PromptReady, ModelReady, ClientMod
         parse_structured_output(response)
     }
 
-    /// Generate a response incorporating a history of conversation turns.
+    /// Generate a response with prior conversation turns prepended.
+    ///
+    /// A convenience over assembling the history into the [`Prompt`] yourself:
+    /// each [`ConversationTurn`](crate::message::ConversationTurn) contributes
+    /// its user message, assistant message, and any tool results, followed by
+    /// this request's prompt. Tools run as in [`generate`](Self::generate).
+    ///
+    /// # Errors
+    ///
+    /// Same as [`generate`](Self::generate).
     pub async fn generate_with_history(
         self,
         history: &[crate::message::ConversationTurn],
@@ -732,7 +1074,23 @@ impl<'a, ClientModelState> RequestBuilder<'a, PromptReady, ModelReady, ClientMod
             .await
     }
 
-    /// Stream the generation response as high-level stream events.
+    /// Stream the response as high-level [`StreamEvent`](crate::message::StreamEvent)s.
+    ///
+    /// Higher level than [`stream`](Self::stream): text deltas are passed
+    /// through, tool-call argument fragments are buffered and emitted as whole
+    /// calls, and a final `TurnComplete` event carries the assembled
+    /// [`ConversationTurn`](crate::message::ConversationTurn) — convenient for
+    /// feeding conversation history back into a later request.
+    ///
+    /// Registered tools are *not* executed; this only reports what the model
+    /// asked for.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when opening the stream fails, with the same causes as
+    /// [`Client::generate_stream`] — including [`Error::InvalidRequest`] if the
+    /// client has tools registered. Once the stream is open, individual items
+    /// may also be errors.
     pub async fn generate_stream_events(
         self,
     ) -> Result<impl Stream<Item = Result<crate::message::StreamEvent>> + Send> {
@@ -827,7 +1185,46 @@ impl<'a, ClientModelState> RequestBuilder<'a, PromptReady, ModelReady, ClientMod
         Ok(stream_events)
     }
 
-    /// Stream the generation response.
+    /// Stream raw provider events as they arrive.
+    ///
+    /// Use this to render output incrementally. Each item is a [`Result`], since
+    /// a stream can fail partway through — do not discard the error case, or a
+    /// mid-stream failure will look like a clean end of output.
+    ///
+    /// # Errors
+    ///
+    /// Opening the stream fails with the same causes as
+    /// [`Client::generate_stream`]. In particular it returns
+    /// [`Error::InvalidRequest`] if the **client** has any tool registered,
+    /// because streaming cannot run a tool loop. Note that
+    /// [`no_tools`](Self::no_tools) does not lift this restriction, since the
+    /// check inspects the client rather than the resolved request; build a
+    /// tool-free client if you need to stream.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use futures::StreamExt;
+    /// use rai_sdk::{ClientBuilder, Model, provider::ProviderStreamEvent};
+    ///
+    /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let client = ClientBuilder::new().from_env().model(Model::gpt4o_mini()).build()?;
+    /// let mut stream = client
+    ///     .request()
+    ///     .prompt("Count from one to five.")
+    ///     .stream()
+    ///     .await?;
+    ///
+    /// while let Some(event) = stream.next().await {
+    ///     match event? {
+    ///         ProviderStreamEvent::Text(text) => print!("{text}"),
+    ///         ProviderStreamEvent::Done { .. } => println!(),
+    ///         _ => {}
+    ///     }
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn stream(
         self,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<crate::provider::ProviderStreamEvent>> + Send>>>
@@ -845,12 +1242,40 @@ impl<'a, ClientModelState> RequestBuilder<'a, PromptReady, ModelReady, ClientMod
         .await
     }
 
-    /// Stream the generation response and accumulate into a complete [`Response`].
+    /// Stream internally and return one complete [`Response`].
     ///
-    /// Uses streaming transport (lower time-to-first-byte) but consumes all
-    /// chunks internally and returns a complete response rather than individual
-    /// chunks. Useful for progress logging or when you want streaming latency
-    /// benefits without manual chunk assembly.
+    /// Uses the streaming transport (lower time-to-first-byte, and less likely
+    /// to sit near a timeout on long generations) but consumes every chunk for
+    /// you, so the result is shaped exactly like [`generate`](Self::generate).
+    /// Reach for this when you want streaming's latency behavior without
+    /// handling events.
+    ///
+    /// Only text and the terminating event are accumulated, so tool calls are
+    /// not represented in the returned response.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`stream`](Self::stream), including [`Error::InvalidRequest`]
+    /// when the client has tools registered, plus any error encountered while
+    /// consuming the stream.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use rai_sdk::{ClientBuilder, Model};
+    ///
+    /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let client = ClientBuilder::new().from_env().model(Model::gpt4o_mini()).build()?;
+    /// let response = client
+    ///     .request()
+    ///     .prompt("Write a short launch announcement.")
+    ///     .stream_accumulated()
+    ///     .await?;
+    ///
+    /// println!("{}", response.text());
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn stream_accumulated(self) -> Result<Response> {
         let resolved = self.resolve()?;
         let prompt = self
@@ -1025,7 +1450,35 @@ where
         })
 }
 
-/// Builder for creating an AI client with specific configuration.
+/// Builder for creating a [`Client`].
+///
+/// Set credentials (usually with [`from_env`](Self::from_env)), then optionally
+/// a default model, generation config, retry policy, and shared tools, and
+/// finish with [`build`](Self::build).
+///
+/// Explicit setters win over the environment regardless of chain order relative
+/// to `from_env()`, because `from_env()` replaces the accumulated config — so
+/// call it first.
+///
+/// # Examples
+///
+/// ```no_run
+/// use std::time::Duration;
+///
+/// use rai_sdk::{ClientBuilder, GenerationConfig, Model, RetryConfig};
+///
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let client = ClientBuilder::new()
+///     .from_env()
+///     .model(Model::gpt4o_mini())
+///     .config(GenerationConfig::new().with_max_tokens(1024))
+///     .retry_config(RetryConfig::new().with_initial_delay(Duration::from_millis(250)))
+///     .timeout(60)
+///     .build()?;
+/// # let _ = client;
+/// # Ok(())
+/// # }
+/// ```
 pub struct ClientBuilder<ModelState = ModelMissing> {
     config: Config,
     default_model: Option<Model>,
@@ -1071,7 +1524,12 @@ impl<ModelState> ClientBuilder<ModelState> {
         }
     }
 
-    /// Use configuration from environment variables.
+    /// Load configuration from environment variables.
+    ///
+    /// Reads the API keys, base URLs, timeout, and retry variables documented in
+    /// [`config`](crate::config). This **replaces** any configuration already
+    /// accumulated on the builder, so call it first and then override
+    /// individual values.
     pub fn from_env(mut self) -> Self {
         self.config = Config::from_env();
         self.default_retry_config = self.config.retry_config();
@@ -1155,6 +1613,10 @@ impl<ModelState> ClientBuilder<ModelState> {
     }
 
     /// Set the default model used by request builders.
+    ///
+    /// This also moves the builder into the model-ready state, so the resulting
+    /// client can start requests that need only a prompt. Individual requests
+    /// can still override it with [`RequestBuilder::model`].
     pub fn model(mut self, model: Model) -> ClientBuilder<ModelReady> {
         self.default_model = Some(model);
         self.with_state()
@@ -1178,7 +1640,11 @@ impl<ModelState> ClientBuilder<ModelState> {
         self
     }
 
-    /// Register a single tool to be auto-executed by `generate()`.
+    /// Register a tool that [`RequestBuilder::generate`] may auto-execute.
+    ///
+    /// Client-level tools are available to every request. Note that registering
+    /// any tool makes the streaming methods unusable for this client; see
+    /// [`RequestBuilder::stream`].
     pub fn tool(mut self, tool: Tool) -> Self {
         self.tools.push(tool);
         self
@@ -1193,7 +1659,17 @@ impl<ModelState> ClientBuilder<ModelState> {
         self
     }
 
-    /// Build the AI client.
+    /// Build the client.
+    ///
+    /// Providers with credentials are initialized; providers without them are
+    /// left unavailable rather than causing a failure, so this succeeds even if
+    /// only one key is present.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::InvalidRequest`] if two registered tools share a name, or a
+    ///   tool's input schema is invalid.
+    /// - An error if a provider's HTTP client cannot be constructed.
     pub fn build(self) -> Result<Client<ModelState>> {
         let mut tool_registry = ToolRegistry::new();
         tool_registry.extend(self.tools)?;

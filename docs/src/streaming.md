@@ -82,12 +82,14 @@ Match non-exhaustively (`_ => {}`) so new event kinds do not break your code.
 
 ## Streaming and tools
 
-The raw streaming API **rejects** requests with registered tools rather than silently ignoring them. Executing a tool loop requires sending follow-up requests, which is incompatible with handing you a single continuous stream.
+The streaming methods **reject** requests when tools are registered, rather than silently ignoring them. Executing a tool loop requires sending follow-up requests, which is incompatible with handing you a single continuous stream. You get `Error::InvalidRequest`.
+
+One sharp edge: the check inspects the **client's** tools, not the resolved per-request tool set. So `.no_tools()` on the request does **not** make streaming work on a client that has tools registered — the request is still rejected. Treat streaming as a property of the client.
 
 Your options:
 
 - Use `generate()` and accept non-incremental output.
-- Use `.no_tools()` on the request to stream without tools.
+- Build a separate tool-free client for streaming, and keep the tool-enabled client for `generate()`.
 - Drive the loop yourself with `generate_once()`, executing calls between turns.
 
 ## Timeouts
