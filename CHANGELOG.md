@@ -44,7 +44,11 @@ Initial public release of the SDK. Everything below is new.
 - **Streaming.** `stream()` yields raw `ProviderStreamEvent`s,
   `generate_stream_events()` yields higher-level `StreamEvent`s including
   assembled tool calls and turn completion, and `stream_accumulated()` uses the
-  streaming transport but returns one complete `Response`.
+  streaming transport but returns one complete `Response`. Streaming cannot run a
+  tool loop, so a request carrying tools is rejected with
+  `Error::InvalidRequest`. The check honors per-request overrides:
+  `no_tools()` lets a tool-bearing client stream, and a request-level `tool()` is
+  rejected rather than silently dropped.
 - **Retries with exponential backoff.** `RetryConfig` controls maximum attempts,
   initial and maximum delay, backoff multiplier, and jitter. Transient rate
   limit, timeout, and retryable HTTP failures are retried automatically; retries
