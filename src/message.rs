@@ -1,3 +1,41 @@
+//! Prompts, messages, and responses.
+//!
+//! A request is described by a [`Prompt`], which is just an ordered list of
+//! [`Message`]s. Messages are text-only by default and become multimodal when
+//! they carry [`ContentBlock`]s instead. Providers answer with a [`Response`]
+//! (or a stream of [`StreamChunk`]/[`StreamEvent`] values), and structured
+//! requests answer with a [`StructuredOutput<T>`](StructuredOutput) that pairs
+//! the parsed value with the raw response.
+//!
+//! These types are provider-agnostic: each provider translates them to and
+//! from its own wire format.
+//!
+//! # Examples
+//!
+//! ```no_run
+//! use rai_sdk::{ContentBlock, Message, Prompt};
+//!
+//! // Anything that converts into a `Prompt` can be passed to a request.
+//! let simple: Prompt = "Summarize this file.".into();
+//!
+//! // Multi-turn conversations are built explicitly.
+//! let conversation = Prompt::new(vec![
+//!     Message::system("You are terse."),
+//!     Message::user("Who wrote Dune?"),
+//!     Message::assistant("Frank Herbert."),
+//!     Message::user("When?"),
+//! ]);
+//! assert_eq!(conversation.system_message(), Some("You are terse."));
+//!
+//! // Multimodal messages mix text with images.
+//! let vision = Prompt::single(Message::user_multimodal(vec![
+//!     ContentBlock::text("What is in this picture?"),
+//!     ContentBlock::image_url("https://example.com/cat.png"),
+//! ]));
+//! assert!(vision.is_multimodal());
+//! # let _ = simple;
+//! ```
+
 use serde::{Deserialize, Serialize};
 
 use crate::error::ProviderKind;
@@ -6,9 +44,13 @@ use crate::error::ProviderKind;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
+    /// Instructions that steer the whole conversation.
     System,
+    /// Input from the end user.
     User,
+    /// Output produced by the model.
     Assistant,
+    /// The result of executing a tool the model asked for.
     Tool,
 }
 
@@ -36,23 +78,58 @@ pub struct ToolCall {
 }
 
 /// Content block for multimodal messages.
+///
+/// Only [`ContentBlock::Text`] and [`ContentBlock::Image`] are currently
+/// translated by the bundled providers; audio, video, and file blocks are
+/// modelled here but not yet sent on the wire.
+///
+/// # Examples
+///
+/// ```no_run
+/// use rai_sdk::ContentBlock;
+///
+/// let caption = ContentBlock::text("Describe this diagram.");
+/// let remote = ContentBlock::image_url("https://example.com/diagram.png");
+/// let inline = ContentBlock::image_base64("image/png", "iVBORw0KGgo=");
+/// # let _ = (caption, remote, inline);
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum ContentBlock {
+    /// Plain text.
     #[serde(rename = "text")]
-    Text { text: String },
+    Text {
+        /// The text content.
+        text: String,
+    },
 
+    /// An image, by URL or inline base64 data.
     #[serde(rename = "image")]
-    Image { source: ImageSource },
+    Image {
+        /// Where the image data comes from.
+        source: ImageSource,
+    },
 
+    /// An audio clip. Not yet supported by the bundled providers.
     #[serde(rename = "audio")]
-    Audio { source: FileSource },
+    Audio {
+        /// Where the audio data comes from.
+        source: FileSource,
+    },
 
+    /// A video clip. Not yet supported by the bundled providers.
     #[serde(rename = "video")]
-    Video { source: FileSource },
+    Video {
+        /// Where the video data comes from.
+        source: FileSource,
+    },
 
+    /// An arbitrary file. Not yet supported by the bundled providers.
     #[serde(rename = "file")]
-    File { source: FileSource },
+    File {
+        /// Where the file data comes from.
+        source: FileSource,
+    },
 }
 
 impl ContentBlock {
@@ -134,29 +211,71 @@ impl ContentBlock {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum ImageSource {
+    /// A publicly reachable image URL the provider will fetch.
     #[serde(rename = "url")]
-    Url { url: String },
+    Url {
+        /// URL of the image.
+        url: String,
+    },
 
+    /// Image bytes embedded in the request.
     #[serde(rename = "base64")]
-    Base64 { media_type: String, data: String },
+    Base64 {
+        /// MIME type of the data, e.g. `image/png`.
+        media_type: String,
+        /// Base64-encoded image bytes, without a data-URL prefix.
+        data: String,
+    },
 }
 
 /// File source for multimodal content.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum FileSource {
+    /// A publicly reachable URL the provider will fetch.
     #[serde(rename = "url")]
-    Url { url: String },
+    Url {
+        /// URL of the file.
+        url: String,
+    },
 
+    /// File bytes embedded in the request.
     #[serde(rename = "base64")]
-    Base64 { media_type: String, data: String },
+    Base64 {
+        /// MIME type of the data, e.g. `audio/mpeg`.
+        media_type: String,
+        /// Base64-encoded file bytes, without a data-URL prefix.
+        data: String,
+    },
 }
 
 /// A single message in a conversation.
 ///
 /// Supports text-only and multimodal (text + images) content.
+///
+/// Use the constructors ([`Message::system`], [`Message::user`],
+/// [`Message::assistant`], [`Message::tool`], [`Message::user_multimodal`], …)
+/// rather than building the struct by hand; they keep the role and the
+/// tool-related fields consistent.
+///
+/// # Examples
+///
+/// ```no_run
+/// use rai_sdk::Message;
+///
+/// let system = Message::system("Answer in one sentence.");
+/// let user = Message::user("Why is the sky blue?");
+/// assert_eq!(user.text_content(), "Why is the sky blue?");
+/// assert!(!user.is_multimodal());
+///
+/// // Tool results reference the call they answer.
+/// let result = Message::tool(r#"{"temp_c":21}"#, "call_abc123");
+/// assert_eq!(result.tool_call_id.as_deref(), Some("call_abc123"));
+/// # let _ = system;
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
+    /// Who produced this message.
     pub role: Role,
 
     /// Text content (for simple text-only messages).
@@ -298,37 +417,76 @@ impl Message {
 }
 
 /// A single conversation turn involving user, assistant, and potentially tools.
+///
+/// Turns are a convenient way to keep history around: replaying them with
+/// [`Prompt::with_history`] re-expands them into the flat message list a
+/// provider expects.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConversationTurn {
+    /// The user message that opened the turn.
     pub user_message: Message,
+    /// The assistant reply, including any tool calls it requested.
     pub assistant_message: Message,
+    /// Tool result messages produced for this turn, in execution order.
     pub tool_results: Vec<Message>,
 }
 
 /// A stream event from an AI generation request.
+///
+/// Emitted by
+/// [`RequestBuilder::generate_stream_events`](crate::RequestBuilder::generate_stream_events),
+/// which assembles low-level provider events into this higher-level shape.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StreamEvent {
+    /// An incremental piece of assistant text.
     TextDelta {
+        /// Text to append to what has been received so far.
         text: String,
     },
+    /// A tool call that has finished streaming its arguments.
     ToolCall {
+        /// Provider-assigned call identifier.
         id: String,
+        /// Name of the tool the model wants to run.
         name: String,
+        /// Raw JSON argument string as streamed by the provider.
         arguments: String,
     },
+    /// The result of executing a tool call.
     ToolResult {
+        /// Identifier of the call this result answers.
         id: String,
+        /// Serialized tool output.
         result: String,
     },
+    /// The turn is finished; carries the assembled conversation turn.
     TurnComplete {
+        /// The complete turn, ready to be stored as history.
         turn: ConversationTurn,
     },
 }
 
 /// A collection of messages forming a prompt.
+///
+/// `Prompt` implements `From<&str>`, `From<String>`, `From<Message>`, and
+/// `From<Vec<Message>>`, so most call sites can pass their input directly to
+/// [`RequestBuilder::prompt`](crate::RequestBuilder::prompt).
+///
+/// # Examples
+///
+/// ```no_run
+/// use rai_sdk::{Message, Prompt};
+///
+/// let prompt = Prompt::single(Message::system("Be brief."))
+///     .with_message(Message::user("Define entropy."));
+///
+/// assert_eq!(prompt.system_message(), Some("Be brief."));
+/// assert_eq!(prompt.conversation_messages().len(), 1);
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Prompt {
+    /// Messages in provider order; system messages usually come first.
     pub messages: Vec<Message>,
 }
 
@@ -411,15 +569,59 @@ impl From<Message> for Prompt {
     }
 }
 
+impl From<&str> for Prompt {
+    fn from(text: &str) -> Self {
+        Prompt {
+            messages: vec![Message::user(text.to_string())],
+        }
+    }
+}
+
+impl From<String> for Prompt {
+    fn from(text: String) -> Self {
+        Prompt {
+            messages: vec![Message::user(text)],
+        }
+    }
+}
+
 /// Token usage metadata from the AI response.
+///
+/// Fields are optional because providers do not all report the same counters,
+/// and streaming responses only include usage on the final event.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Usage {
+    /// Tokens consumed by the prompt (input tokens).
     pub prompt_tokens: Option<i32>,
+    /// Tokens produced by the model (output tokens).
     pub completion_tokens: Option<i32>,
+    /// Prompt plus completion tokens.
     pub total_tokens: Option<i32>,
 }
 
 /// The response from an AI generation request.
+///
+/// # Examples
+///
+/// ```no_run
+/// # async fn run() -> rai_sdk::Result<()> {
+/// use rai_sdk::{ClientBuilder, Model};
+///
+/// let client = ClientBuilder::new()
+///     .from_env()
+///     .model(Model::gpt4o_mini())
+///     .build()?;
+///
+/// let response = client.request().prompt("Say hi.").generate().await?;
+///
+/// println!("{}", response.text());
+/// println!("served by {} using {}", response.provider, response.model);
+/// if let Some(usage) = &response.usage {
+///     println!("{:?} total tokens", usage.total_tokens);
+/// }
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Response {
     /// The generated message(s).
@@ -436,6 +638,18 @@ pub struct Response {
 
     /// Finish reason (e.g., "stop", "length", "tool_use").
     pub finish_reason: Option<String>,
+}
+
+impl Response {
+    /// Helper to extract the text content from the first message in the response.
+    ///
+    /// Returns an empty string if the response contains no messages.
+    pub fn text(&self) -> String {
+        self.messages
+            .first()
+            .map(|m| m.text_content())
+            .unwrap_or_default()
+    }
 }
 
 /// A chunk of streamed response.
@@ -455,18 +669,31 @@ pub struct StreamChunk {
 }
 
 /// Parsed structured output together with the underlying AI response.
+///
+/// Returned by
+/// [`RequestBuilder::generate_structured`](crate::RequestBuilder::generate_structured);
+/// the raw [`Response`] is kept so callers still have access to usage, model,
+/// and finish reason.
 #[derive(Debug, Clone)]
 pub struct StructuredOutput<T> {
+    /// The response content deserialized into `T` and schema-validated.
     pub output: T,
+    /// The underlying provider response the value was parsed from.
     pub response: Response,
 }
 
 /// A provider-agnostic tool definition sent to the model.
+///
+/// Produced from a [`Tool`](crate::Tool) when a request is built; providers
+/// translate it into their own function/tool schema.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolDefinition {
+    /// Tool name the model uses to call it.
     pub name: String,
+    /// Optional description telling the model when to use the tool.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// JSON Schema describing the accepted arguments.
     pub input_schema: serde_json::Value,
 }
 
@@ -499,31 +726,5 @@ mod tests {
 
         let p2: Prompt = vec![Message::user("a"), Message::user("b")].into();
         assert_eq!(p2.messages.len(), 2);
-    }
-}
-
-impl Response {
-    /// Helper to extract the text content from the first message in the response.
-    pub fn text(&self) -> String {
-        self.messages
-            .first()
-            .map(|m| m.text_content())
-            .unwrap_or_default()
-    }
-}
-
-impl From<&str> for Prompt {
-    fn from(text: &str) -> Self {
-        Prompt {
-            messages: vec![Message::user(text.to_string())],
-        }
-    }
-}
-
-impl From<String> for Prompt {
-    fn from(text: String) -> Self {
-        Prompt {
-            messages: vec![Message::user(text)],
-        }
     }
 }
