@@ -1,1 +1,24 @@
+# Rust build artifacts
 /target
+**/*.rs.bk
+*.pdb
+
+# Coverage
+/coverage
+*.profraw
+*.profdata
+lcov.info
+
+# mdBook output
+/docs/book
+
+# Local environment / secrets
+.env
+.env.*
+!.env.example
+
+# Editor and OS noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
