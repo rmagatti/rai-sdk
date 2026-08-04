@@ -1,9 +1,60 @@
+//! Per-request generation settings.
+//!
+//! [`GenerationConfig`] carries the knobs that vary from request to request:
+//! sampling parameters, token limits, stop sequences, JSON/structured-output
+//! mode, and the tool-loop limit. It is built with chained `with_*` methods and
+//! can be attached to a client as a default or to a single request as an
+//! override.
+//!
+//! Not every provider honours every field. `top_k` is ignored by providers that
+//! do not support it, and OpenAI reasoning models drop `temperature`/`top_p`.
+//!
+//! # Examples
+//!
+//! ```no_run
+//! use rai_sdk::GenerationConfig;
+//!
+//! let config = GenerationConfig::new()
+//!     .with_temperature(0.2)
+//!     .with_max_tokens(1024)
+//!     .with_stop_sequences(vec!["\n\n".to_string()]);
+//!
+//! assert_eq!(config.tool_round_limit(), 8);
+//! ```
+
 use schemars::{JsonSchema, generate::SchemaSettings};
 use serde::{Deserialize, Serialize};
 
 use crate::error;
 
 /// Configuration for text generation.
+///
+/// Every field is optional; unset fields are simply omitted from the provider
+/// request, so the provider default applies.
+///
+/// # Examples
+///
+/// ```no_run
+/// use rai_sdk::{GenerationConfig, JsonSchema};
+/// use serde::Deserialize;
+///
+/// #[derive(Deserialize, JsonSchema)]
+/// #[schemars(crate = "rai_sdk::schemars")]
+/// struct Summary {
+///     headline: String,
+///     bullets: Vec<String>,
+/// }
+///
+/// // Free-form generation.
+/// let creative = GenerationConfig::new().with_temperature(0.9);
+///
+/// // Schema-constrained generation derived from a Rust type.
+/// let strict = GenerationConfig::new()
+///     .with_temperature(0.0)
+///     .with_json_schema_for::<Summary>()?;
+/// # let _ = (creative, strict);
+/// # Ok::<(), rai_sdk::Error>(())
+/// ```
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GenerationConfig {
     /// Temperature for sampling (0.0 to 2.0 typically).
@@ -45,36 +96,55 @@ impl GenerationConfig {
         Self::default()
     }
 
+    /// Set the sampling temperature. Higher values are more random.
+    ///
+    /// Ignored for OpenAI reasoning (o-series) models, which do not accept it.
     pub fn with_temperature(mut self, temperature: f64) -> Self {
         self.temperature = Some(temperature);
         self
     }
 
+    /// Cap the number of tokens the model may generate.
     pub fn with_max_tokens(mut self, max_tokens: i32) -> Self {
         self.max_tokens = Some(max_tokens);
         self
     }
 
+    /// Set nucleus (top-p) sampling.
+    ///
+    /// Ignored for OpenAI reasoning (o-series) models.
     pub fn with_top_p(mut self, top_p: f64) -> Self {
         self.top_p = Some(top_p);
         self
     }
 
+    /// Set top-k sampling. Only sent to providers that support it.
     pub fn with_top_k(mut self, top_k: i32) -> Self {
         self.top_k = Some(top_k);
         self
     }
 
+    /// Stop generating as soon as one of these sequences is produced.
     pub fn with_stop_sequences(mut self, stop_sequences: Vec<String>) -> Self {
         self.stop_sequences = Some(stop_sequences);
         self
     }
 
+    /// Ask the provider for syntactically valid JSON without constraining its
+    /// shape.
+    ///
+    /// A JSON schema set through [`GenerationConfig::with_json_schema`] or
+    /// [`GenerationConfig::with_json_schema_for`] takes precedence over this
+    /// flag.
     pub fn with_json_mode(mut self, json_mode: bool) -> Self {
         self.json_mode = Some(json_mode);
         self
     }
 
+    /// Constrain the response with a hand-written JSON Schema.
+    ///
+    /// Prefer [`GenerationConfig::with_json_schema_for`] when the shape is
+    /// already expressed as a Rust type.
     pub fn with_json_schema(mut self, json_schema: serde_json::Value) -> Self {
         self.json_schema = Some(json_schema);
         self
@@ -91,6 +161,11 @@ impl GenerationConfig {
     /// `"$ref"` keys with a 400 INVALID_ARGUMENT error. See
     /// [`normalize_strict_json_schema`] for the limits of this approach with
     /// recursive types.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Serialization`](crate::Error::Serialization) if the
+    /// schema generated for `T` cannot be converted to a JSON value.
     pub fn with_json_schema_for<T>(mut self) -> error::Result<Self>
     where
         T: JsonSchema,
@@ -107,6 +182,9 @@ impl GenerationConfig {
         Ok(self)
     }
 
+    /// Limit how many request/tool-execution rounds a single `generate()` call
+    /// may run before failing with
+    /// [`Error::ToolLoopLimitExceeded`](crate::Error::ToolLoopLimitExceeded).
     pub fn with_max_tool_rounds(mut self, max_tool_rounds: usize) -> Self {
         self.max_tool_rounds = Some(max_tool_rounds);
         self
