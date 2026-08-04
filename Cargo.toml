@@ -48,7 +48,7 @@ tracing = "0.1"
 
 # Schema generation & validation
 schemars = "1.2"
-jsonschema = "0.33"
+jsonschema = "0.49"
 
 # Retry jitter
 rand = "0.9"
