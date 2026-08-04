@@ -159,8 +159,8 @@ impl GenerationConfig {
     /// `generation_config.response_schema` (reachable in this SDK through the
     /// OpenRouter provider) rejects schemas containing `"$schema"`, `"$defs"`, or
     /// `"$ref"` keys with a 400 INVALID_ARGUMENT error. See
-    /// [`normalize_strict_json_schema`] for the limits of this approach with
-    /// recursive types.
+    /// the crate-internal schema normalizer's documentation for the limits of
+    /// this approach with recursive types.
     ///
     /// # Errors
     ///

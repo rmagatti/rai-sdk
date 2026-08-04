@@ -51,7 +51,10 @@ fn builder_setters_populate_every_field_they_name() {
         .with_default_max_tokens(512);
 
     assert_eq!(config.openai_key().as_deref(), Some("openai"));
-    assert_eq!(config.openai_base_url.as_deref(), Some("https://openai.test"));
+    assert_eq!(
+        config.openai_base_url.as_deref(),
+        Some("https://openai.test")
+    );
     assert_eq!(config.anthropic_key().as_deref(), Some("anthropic"));
     assert_eq!(
         config.anthropic_base_url.as_deref(),
@@ -83,7 +86,10 @@ fn openrouter_app_url_and_title_aliases_populate_the_canonical_fields() {
         Some("https://app.example.com")
     );
     assert_eq!(config.openrouter_title().as_deref(), Some("Example App"));
-    assert_eq!(config.openrouter_app_title().as_deref(), Some("Example App"));
+    assert_eq!(
+        config.openrouter_app_title().as_deref(),
+        Some("Example App")
+    );
 }
 
 #[test]
@@ -116,7 +122,10 @@ fn config_serialization_omits_unset_optional_fields() {
 #[test]
 fn validation_reports_a_config_error_when_no_key_is_available() {
     if !common::in_env_child() {
-        common::run_in_clean_env("validation_reports_a_config_error_when_no_key_is_available", &[]);
+        common::run_in_clean_env(
+            "validation_reports_a_config_error_when_no_key_is_available",
+            &[],
+        );
         return;
     }
 
@@ -335,7 +344,10 @@ fn the_canonical_openrouter_variables_win_over_the_legacy_ones() {
         config.openrouter_http_referer().as_deref(),
         Some("https://canonical.example.com")
     );
-    assert_eq!(config.openrouter_title().as_deref(), Some("Canonical Title"));
+    assert_eq!(
+        config.openrouter_title().as_deref(),
+        Some("Canonical Title")
+    );
 }
 
 #[test]
@@ -501,7 +513,10 @@ fn explicit_builder_values_take_precedence_over_the_environment() {
         .with_openrouter_categories(vec!["explicit-category".to_string()]);
 
     assert_eq!(config.openai_key().as_deref(), Some("explicit-openai"));
-    assert_eq!(config.anthropic_key().as_deref(), Some("explicit-anthropic"));
+    assert_eq!(
+        config.anthropic_key().as_deref(),
+        Some("explicit-anthropic")
+    );
     assert_eq!(
         config.openrouter_key().as_deref(),
         Some("explicit-openrouter")

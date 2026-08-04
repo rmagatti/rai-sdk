@@ -1,6 +1,6 @@
 //! Error types shared by every provider.
 //!
-//! [`Error`] is the single error type returned across the SDK, and [`Result`]
+//! [`enum@Error`] is the single error type returned across the SDK, and [`Result`]
 //! is the matching alias. Errors carry the [`ProviderKind`] they originated
 //! from where that is meaningful, and expose classification helpers
 //! ([`Error::is_retryable`], [`Error::is_auth_error`], [`Error::kind_str`]) so

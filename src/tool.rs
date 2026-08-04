@@ -1,3 +1,15 @@
+//! Typed tools that the model can call during generation.
+//!
+//! A [`Tool`] pairs a name and description with an async handler. The handler's
+//! argument type supplies the tool's JSON Schema through [`JsonSchema`], so the
+//! schema advertised to the provider and the type the handler receives cannot
+//! drift apart.
+//!
+//! Incoming arguments are validated against that schema before the handler runs.
+//! Validation failures do not abort generation: they are returned to the model
+//! as a structured tool-error message describing each problem, so the model can
+//! correct itself and call the tool again.
+
 use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
 
 use schemars::{JsonSchema, schema_for};
@@ -101,10 +113,18 @@ fn tool_error_content(error: Error) -> Result<String> {
 /// ```
 #[derive(Debug, Clone)]
 pub struct ToolContext {
+    /// Provider that requested the tool call.
     pub provider: ProviderKind,
+    /// Model ID that requested the tool call, as sent on the wire.
     pub model: String,
+    /// Zero-based index of the tool-calling round within the current request.
+    ///
+    /// Useful for detecting repeated calls and for bounding work in handlers
+    /// that may be invoked several times in one generation.
     pub round: usize,
+    /// Name of the tool being invoked.
     pub tool_name: String,
+    /// Provider-assigned identifier for this specific tool call.
     pub tool_call_id: String,
 }
 
@@ -370,6 +390,8 @@ mod tests {
 
     #[derive(Debug, Deserialize, JsonSchema)]
     struct OptionalOnlyArgs {
+        // Only the generated schema is under test here; the field is never read.
+        #[allow(dead_code)]
         #[serde(default)]
         query: Option<String>,
     }

@@ -1,3 +1,14 @@
+//! Validated, typed output driven by a generated JSON Schema.
+//!
+//! Shows how deriving `JsonSchema` lets `generate_structured` validate the
+//! model response and deserialize it into a Rust struct.
+//!
+//! Requires `OPENAI_API_KEY`.
+//!
+//! ```sh
+//! cargo run --example structured_output
+//! ```
+
 use rai_sdk::{ClientBuilder, GenerationConfig, Model, schemars::JsonSchema};
 use serde::{Deserialize, Serialize};
 
