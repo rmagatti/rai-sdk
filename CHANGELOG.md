@@ -13,7 +13,7 @@ the public API. Breaking changes are always called out below.
 
 Nothing yet.
 
-## [0.1.0] - Unreleased
+## [0.1.0] - 2026-08-05
 
 Initial public release of the SDK. Everything below is new.
 

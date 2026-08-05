@@ -3,9 +3,6 @@ name: Docs
 on:
   push:
     branches: [main]
-    paths:
-      - "docs/**"
-      - ".github/workflows/docs.yml"
   # Build (but do not deploy) on pull requests so a broken guide is caught in review.
   pull_request:
     branches: [main]

@@ -2,10 +2,9 @@ name: Release
 
 # Publishing is driven entirely by tags: pushing `v0.2.0` publishes 0.2.0.
 #
-# This workflow is intentionally inert until a `CARGO_REGISTRY_TOKEN`
-# repository secret exists. Without that secret the `verify` job still runs and
-# the `publish` job fails immediately with an explanatory message, so nothing is
-# ever half-published. The very first release is published manually.
+# This workflow requires a `CARGO_REGISTRY_TOKEN` repository secret. Without
+# that secret the `verify` job still runs and the `publish` job fails immediately
+# with an explanatory message, so nothing is ever half-published.
 on:
   push:
     tags:
