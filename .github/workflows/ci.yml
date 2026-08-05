@@ -145,6 +145,17 @@ jobs:
           RUSTDOCFLAGS: "-D warnings"
         run: cargo doc --no-deps --all-features --locked
 
+      # docs.rs builds with a recent nightly and enables the `docsrs` cfg from
+      # package metadata. Keep that otherwise-dormant feature-gate path covered
+      # here so a removed nightly rustdoc feature cannot break hosted API docs.
+      - name: Install nightly Rust for docs.rs parity
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: cargo doc (docs.rs parity)
+        env:
+          RUSTDOCFLAGS: "--cfg docsrs -D warnings"
+        run: cargo +nightly doc --no-deps --all-features --locked
+
   msrv:
     name: MSRV
     runs-on: ubuntu-latest

@@ -13,6 +13,14 @@ the public API. Breaking changes are always called out below.
 
 Nothing yet.
 
+## [0.1.1] - 2026-08-05
+
+### Fixed
+
+- Restore hosted API documentation on docs.rs by replacing the removed nightly
+  `doc_auto_cfg` feature with `doc_cfg`. CI now reproduces docs.rs's nightly
+  `--cfg docsrs` build so this compatibility path stays covered.
+
 ## [0.1.0] - 2026-08-05
 
 Initial public release of the SDK. Everything below is new.
@@ -76,5 +84,6 @@ Initial public release of the SDK. Everything below is new.
 - Documentation: API reference on [docs.rs](https://docs.rs/rai-sdk) and a guide
   at <https://rmagatti.github.io/rai-sdk/>.
 
-[Unreleased]: https://github.com/rmagatti/rai-sdk/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/rmagatti/rai-sdk/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/rmagatti/rai-sdk/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/rmagatti/rai-sdk/releases/tag/v0.1.0

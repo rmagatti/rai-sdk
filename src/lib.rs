@@ -85,7 +85,7 @@
 //! The [guide](https://rmagatti.github.io/rai-sdk/) covers each capability in
 //! task-oriented chapters. Its examples are compile-checked against this crate,
 //! so they stay in sync with the API you see here.
-#![cfg_attr(docsrs, feature(doc_auto_cfg))]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 // Catch a provider without a TLS backend at compile time. A featureless build
 // is valid because it cannot make provider requests and is still useful to
