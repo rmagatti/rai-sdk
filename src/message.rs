@@ -67,7 +67,7 @@ impl Role {
 }
 
 /// A tool invocation emitted by a model.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolCall {
     /// Provider-assigned call identifier.
     pub id: String,
@@ -93,7 +93,7 @@ pub struct ToolCall {
 /// let inline = ContentBlock::image_base64("image/png", "iVBORw0KGgo=");
 /// # let _ = (caption, remote, inline);
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum ContentBlock {
     /// Plain text.
@@ -208,7 +208,7 @@ impl ContentBlock {
 }
 
 /// Image source for multimodal content.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum ImageSource {
     /// A publicly reachable image URL the provider will fetch.
@@ -229,7 +229,7 @@ pub enum ImageSource {
 }
 
 /// File source for multimodal content.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum FileSource {
     /// A publicly reachable URL the provider will fetch.
@@ -273,7 +273,7 @@ pub enum FileSource {
 /// assert_eq!(result.tool_call_id.as_deref(), Some("call_abc123"));
 /// # let _ = system;
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Message {
     /// Who produced this message.
     pub role: Role,
@@ -421,7 +421,7 @@ impl Message {
 /// Turns are a convenient way to keep history around: replaying them with
 /// [`Prompt::with_history`] re-expands them into the flat message list a
 /// provider expects.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConversationTurn {
     /// The user message that opened the turn.
     pub user_message: Message,
@@ -436,7 +436,7 @@ pub struct ConversationTurn {
 /// Emitted by
 /// [`RequestBuilder::generate_stream_events`](crate::RequestBuilder::generate_stream_events),
 /// which assembles low-level provider events into this higher-level shape.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StreamEvent {
     /// An incremental piece of assistant text.
@@ -484,7 +484,7 @@ pub enum StreamEvent {
 /// assert_eq!(prompt.system_message(), Some("Be brief."));
 /// assert_eq!(prompt.conversation_messages().len(), 1);
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Prompt {
     /// Messages in provider order; system messages usually come first.
     pub messages: Vec<Message>,
@@ -589,7 +589,7 @@ impl From<String> for Prompt {
 ///
 /// Fields are optional because providers do not all report the same counters,
 /// and streaming responses only include usage on the final event.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Usage {
     /// Tokens consumed by the prompt (input tokens).
     pub prompt_tokens: Option<i32>,
@@ -622,7 +622,7 @@ pub struct Usage {
 /// # Ok(())
 /// # }
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Response {
     /// The generated message(s).
     pub messages: Vec<Message>,
@@ -653,7 +653,7 @@ impl Response {
 }
 
 /// A chunk of streamed response.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StreamChunk {
     /// The text content in this chunk.
     pub content: String,
@@ -686,7 +686,7 @@ pub struct StructuredOutput<T> {
 ///
 /// Produced from a [`Tool`](crate::Tool) when a request is built; providers
 /// translate it into their own function/tool schema.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolDefinition {
     /// Tool name the model uses to call it.
     pub name: String,

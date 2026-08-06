@@ -115,6 +115,101 @@ The rule applies in both directions: adding a tool with `.tool(..)` on a request
 
 If you need incremental output *and* tool execution in one exchange, drive the loop yourself with `generate_once()`, executing calls between turns.
 
+## Cancellation
+
+**Dropping a stream aborts the upstream provider request.** Every streaming method is driven entirely by its consumer: the provider's HTTP response body is polled from inside the returned stream, never from a detached background task. Dropping the stream drops that body, closes the connection, and the provider stops generating.
+
+That holds for the whole family — `stream()`, `generate_stream_events()`, `stream_wire_events()`, and `stream_accumulated()` — and it holds when the surrounding task is cancelled rather than the stream explicitly dropped, which is what a `tokio::time::timeout` or a web-framework client disconnect looks like. Nothing keeps running in the background.
+
+Two consequences to plan for:
+
+- A cancelled generation produces **no terminal event**, so no usage is reported. Providers still bill for what they generated before the abort, so metering cannot rely on the final usage event alone.
+- Conversely, there is nothing to clean up. You do not need a cancellation token or an abort handle; letting the stream go out of scope is the whole mechanism.
+
+## Proxying a stream to your own clients
+
+If your server holds the provider credentials and streams results on to a desktop or browser client, the events have to cross a wire. The [`wire`](https://docs.rs/rai-sdk/latest/rai_sdk/wire/index.html) module covers that case:
+
+```text
+  client ──POST──▶ your server ──rai-sdk──▶ provider
+         ◀──SSE─── WireStreamEvent ◀────────┘
+```
+
+`stream_wire_events()` yields `WireStreamEvent`s, which serialize to a tagged JSON object — one SSE `data:` payload each:
+
+```rust,no_run
+use futures::StreamExt;
+use rai_sdk::{ClientBuilder, Model};
+
+# async fn run() -> Result<(), Box<dyn std::error::Error>> {
+let client = ClientBuilder::new().from_env().model(Model::gpt4o_mini()).build()?;
+
+let mut events = client
+    .request()
+    .prompt("Explain SSE in one sentence.")
+    .stream_wire_events()
+    .await?;
+
+while let Some(event) = events.next().await {
+    // event: text_delta
+    // data: {"type":"text_delta","text":"Server-sent"}
+    println!("event: {}\ndata: {}\n", event.tag(), serde_json::to_string(&event)?);
+}
+# Ok(())
+# }
+```
+
+On the receiving side, `StreamAccumulator` is the client-side counterpart of `stream_accumulated()`: feed it the parsed events and it hands back one `Response`, tool calls included.
+
+```rust
+use rai_sdk::wire::{StreamAccumulator, WireStreamEvent};
+
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+let payloads = [
+    r#"{"type":"message_start","protocol_version":1,"model":"gpt-4o-mini","provider":"openai"}"#,
+    r#"{"type":"text_delta","text":"Hello, "}"#,
+    r#"{"type":"text_delta","text":"world."}"#,
+    r#"{"type":"usage","usage":{"prompt_tokens":9,"completion_tokens":3,"total_tokens":12}}"#,
+    r#"{"type":"message_stop","finish_reason":"stop"}"#,
+];
+
+let mut accumulator = StreamAccumulator::new();
+for payload in payloads {
+    accumulator.push(serde_json::from_str::<WireStreamEvent>(payload)?)?;
+}
+
+let response = accumulator.finish()?;
+assert_eq!(response.text(), "Hello, world.");
+assert_eq!(response.usage.unwrap().total_tokens, Some(12));
+# Ok(())
+# }
+```
+
+`examples/sse_proxy.rs` runs the whole loop — an axum handler, SSE re-emission, and client-side reassembly — in one process.
+
+### Wire events
+
+Unlike the other streaming methods, `stream_wire_events()` items are not `Result`s. Once the stream is open, every outcome is an event:
+
+| `"type"` | Meaning |
+| --- | --- |
+| `message_start` | First event of every stream; names the protocol version, model, and provider. |
+| `text_delta` | Append this text to the output so far. |
+| `tool_call_start` / `tool_call_delta` / `tool_call_end` | A tool call, first incrementally and then assembled. |
+| `tool_result` | The output of executing a tool call. Only a proxy that runs tools itself emits this. |
+| `usage` | Token counts, emitted once just before the terminal event. |
+| `message_stop` | Terminal event of a successful stream. |
+| `turn_complete` | An assembled `ConversationTurn`, for history. |
+| `error` | Terminal event of a failed stream. |
+
+A mid-stream provider failure arrives as `error` rather than as a truncated response, which is the point: a client that receives no terminal event at all knows its *connection* died instead. `StreamAccumulator::finish()` enforces the distinction — it returns the carried error for the first case and a `stream`-kind error naming the truncation for the second.
+
+### Versioning
+
+The `"type"` strings and each event's field names are a compatibility surface: a server and a client can be built from different `rai-sdk` versions. Renaming or removing one is a breaking change and will be called out in the changelog. Adding a variant is not, so match with a catch-all arm — `WireStreamEvent` and `WireErrorKind` are both `#[non_exhaustive]`, and an unrecognized error kind deserializes into `WireErrorKind::Other` instead of failing.
+
+`WIRE_PROTOCOL_VERSION` names the current revision of the framing and rides on every `message_start`. It is bumped only when a client must react to a framing change, never for additive variants.
+
 ## Timeouts
 
 Streaming does not exempt a request from the configured timeout. A long generation can still exceed `AI_TIMEOUT_SECONDS`; raise it for workloads that legitimately run long. See [Configuration](./configuration.md#timeout).

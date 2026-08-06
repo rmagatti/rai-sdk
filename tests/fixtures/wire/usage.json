@@ -1,0 +1,8 @@
+{
+  "type": "usage",
+  "usage": {
+    "completion_tokens": 256,
+    "prompt_tokens": 1024,
+    "total_tokens": 1280
+  }
+}

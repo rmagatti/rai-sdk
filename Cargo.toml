@@ -77,6 +77,16 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Offline provider mocking and env-var isolation for tests
 wiremock = "0.6"
 serial_test = "4"
+# The HTTP server in `examples/sse_proxy.rs`, which demonstrates re-emitting
+# rai-sdk stream events over SSE. Not used by the crate itself.
+axum = "0.8"
+
+# The SSE proxy example drives a real provider through an axum handler, so it
+# needs a provider compiled in. Naming it here keeps a providerless
+# `--no-default-features` build from trying to compile it.
+[[example]]
+name = "sse_proxy"
+required-features = ["openai"]
 
 [features]
 default = ["openai", "anthropic", "openrouter", "rustls-tls"]

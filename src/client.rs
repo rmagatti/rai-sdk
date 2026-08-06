@@ -1104,6 +1104,16 @@ impl<'a, ClientModelState> RequestBuilder<'a, PromptReady, ModelReady, ClientMod
     /// Registered tools are *not* executed; this only reports what the model
     /// asked for.
     ///
+    /// To forward these events to a remote client instead of consuming them in
+    /// process, see [`stream_wire_events`](Self::stream_wire_events);
+    /// [`WireStreamEvent`](crate::wire::WireStreamEvent) also implements
+    /// `From<StreamEvent>` if you would rather convert these.
+    ///
+    /// # Cancellation
+    ///
+    /// Dropping the returned stream aborts the upstream provider request. See
+    /// the "Cancellation" section of [`stream`](Self::stream).
+    ///
     /// # Errors
     ///
     /// Same as [`stream`](Self::stream), including [`Error::InvalidRequest`]
@@ -1205,11 +1215,228 @@ impl<'a, ClientModelState> RequestBuilder<'a, PromptReady, ModelReady, ClientMod
         Ok(stream_events)
     }
 
+    /// Stream the response as serializable
+    /// [`WireStreamEvent`](crate::wire::WireStreamEvent)s, ready to forward to a
+    /// remote client.
+    ///
+    /// This is the SDK half of the proxy pattern: your server holds the
+    /// provider credentials, calls this, and re-emits each event as an SSE
+    /// `data:` payload; the client parses them back into `WireStreamEvent`s and
+    /// rebuilds the response with
+    /// [`StreamAccumulator`](crate::wire::StreamAccumulator). See the
+    /// [`wire`](crate::wire) module for the format and its compatibility
+    /// guarantees, and `examples/sse_proxy.rs` for the whole loop.
+    ///
+    /// # Stream shape
+    ///
+    /// Unlike the other streaming methods, items are **not** `Result`s. Once the
+    /// stream is open every outcome is an event, so a mid-stream provider
+    /// failure reaches the client as
+    /// [`WireStreamEvent::Error`](crate::wire::WireStreamEvent::Error) instead
+    /// of as a silently truncated response. The sequence is:
+    ///
+    /// 1. exactly one
+    ///    [`MessageStart`](crate::wire::WireStreamEvent::MessageStart);
+    /// 2. any number of text and tool-call events;
+    /// 3. one [`Usage`](crate::wire::WireStreamEvent::Usage), when the provider
+    ///    reported token counts;
+    /// 4. exactly one terminal event —
+    ///    [`MessageStop`](crate::wire::WireStreamEvent::MessageStop) on success,
+    ///    [`Error`](crate::wire::WireStreamEvent::Error) on failure.
+    ///
+    /// Tool-call arguments are reported twice over: incrementally as
+    /// [`ToolCallStart`](crate::wire::WireStreamEvent::ToolCallStart) plus
+    /// [`ToolCallDelta`](crate::wire::WireStreamEvent::ToolCallDelta) so a UI can
+    /// render progress, then once assembled as
+    /// [`ToolCallEnd`](crate::wire::WireStreamEvent::ToolCallEnd). A client that
+    /// only wants finished calls can ignore the first two.
+    ///
+    /// Registered tools are *not* executed, exactly as with
+    /// [`generate_stream_events`](Self::generate_stream_events).
+    ///
+    /// # Cancellation
+    ///
+    /// Dropping the returned stream aborts the upstream provider request. See
+    /// the "Cancellation" section of [`stream`](Self::stream) — it matters more
+    /// here than anywhere else, because for a proxy the consumer being dropped
+    /// *is* the end client hanging up.
+    ///
+    /// # Errors
+    ///
+    /// The returned `Result` covers only failures that happen before the stream
+    /// opens: the same causes as [`stream`](Self::stream), including
+    /// [`Error::InvalidRequest`] when the request's effective tool set is
+    /// non-empty. A server that wants its client to see those too can forward
+    /// them with
+    /// [`WireStreamEvent::error`](crate::wire::WireStreamEvent::error).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use futures::StreamExt;
+    /// use rai_sdk::{ClientBuilder, Model};
+    ///
+    /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let client = ClientBuilder::new().from_env().model(Model::gpt4o_mini()).build()?;
+    /// let mut events = client
+    ///     .request()
+    ///     .prompt("Summarize the news.")
+    ///     .stream_wire_events()
+    ///     .await?;
+    ///
+    /// while let Some(event) = events.next().await {
+    ///     // `data: {"type":"text_delta","text":"..."}`
+    ///     println!("data: {}\n", serde_json::to_string(&event)?);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn stream_wire_events(
+        self,
+    ) -> Result<Pin<Box<dyn Stream<Item = crate::wire::WireStreamEvent> + Send>>> {
+        use crate::wire::WireStreamEvent;
+
+        let resolved = self.resolve()?;
+        let prompt = self
+            .prompt
+            .as_ref()
+            .expect("prompt-ready request builder must contain a prompt");
+
+        ensure_streamable(&resolved.tool_registry)?;
+
+        let model_str = resolved.model.as_str().to_string();
+        let provider = resolved.model.provider();
+
+        let mut stream = crate::retry::with_retry(&resolved.retry_config, "stream", || {
+            self.client
+                .generate_stream_inner(resolved.model.clone(), prompt, &resolved.config)
+        })
+        .await?;
+
+        let wire_events = async_stream::stream! {
+            yield WireStreamEvent::message_start(model_str, provider);
+
+            // The assembled `ToolCallEnd` for the call currently streaming.
+            // Providers do not delimit tool calls explicitly, so a call is
+            // closed by the next `ToolCallStart` or by the end of the stream.
+            let mut pending_tool: Option<(String, String, String)> = None;
+            let mut finish_reason: Option<String> = None;
+            let mut usage: Option<crate::message::Usage> = None;
+            let mut failed = false;
+
+            while let Some(chunk_result) = stream.next().await {
+                let chunk = match chunk_result {
+                    Ok(chunk) => chunk,
+                    Err(error) => {
+                        // Terminal: a provider failure is an event, not a
+                        // dropped connection.
+                        yield WireStreamEvent::error(&error);
+                        failed = true;
+                        break;
+                    }
+                };
+
+                match chunk {
+                    crate::provider::ProviderStreamEvent::Text(text) => {
+                        yield WireStreamEvent::TextDelta { text };
+                    }
+
+                    crate::provider::ProviderStreamEvent::ToolCallStart { id, name } => {
+                        if let Some((prev_id, prev_name, prev_args)) = pending_tool.take() {
+                            yield WireStreamEvent::ToolCallEnd {
+                                id: prev_id,
+                                name: prev_name,
+                                arguments: prev_args,
+                            };
+                        }
+                        pending_tool = Some((id.clone(), name.clone(), String::new()));
+                        yield WireStreamEvent::ToolCallStart { id, name };
+                    }
+
+                    crate::provider::ProviderStreamEvent::ToolCallChunk { id, arguments } => {
+                        // Some providers omit the id on continuation chunks;
+                        // attribute those to the call already in flight.
+                        let id = match (&pending_tool, id.is_empty()) {
+                            (Some((pending_id, _, _)), true) => pending_id.clone(),
+                            _ => id,
+                        };
+                        if let Some((pending_id, _, pending_args)) = pending_tool.as_mut() {
+                            if *pending_id == id {
+                                pending_args.push_str(&arguments);
+                            }
+                        }
+                        yield WireStreamEvent::ToolCallDelta { id, arguments };
+                    }
+
+                    crate::provider::ProviderStreamEvent::Done {
+                        finish_reason: reason,
+                        usage: reported,
+                    } => {
+                        if let Some((id, name, arguments)) = pending_tool.take() {
+                            yield WireStreamEvent::ToolCallEnd { id, name, arguments };
+                        }
+                        // Providers may split the finish reason and the usage
+                        // across separate `Done` events, so keep the last of
+                        // each rather than emitting one terminal event per
+                        // `Done`.
+                        if reason.is_some() {
+                            finish_reason = reason;
+                        }
+                        if reported.is_some() {
+                            usage = reported;
+                        }
+                    }
+                }
+            }
+
+            if failed {
+                return;
+            }
+
+            if let Some((id, name, arguments)) = pending_tool.take() {
+                yield WireStreamEvent::ToolCallEnd { id, name, arguments };
+            }
+            if let Some(usage) = usage {
+                yield WireStreamEvent::Usage { usage };
+            }
+            yield WireStreamEvent::MessageStop { finish_reason };
+        };
+
+        // Boxed rather than `impl Stream` so the result borrows nothing and is
+        // `'static`. A proxy handler builds this from a shared `Client` and
+        // hands it straight to its web framework, which needs an owned,
+        // lifetime-free stream.
+        Ok(Box::pin(wire_events))
+    }
+
     /// Stream raw provider events as they arrive.
     ///
     /// Use this to render output incrementally. Each item is a [`Result`], since
     /// a stream can fail partway through — do not discard the error case, or a
     /// mid-stream failure will look like a clean end of output.
+    ///
+    /// # Cancellation
+    ///
+    /// **Dropping the stream aborts the upstream provider request.** Every
+    /// streaming method in this crate is driven entirely by the consumer: the
+    /// provider's HTTP response body is polled from inside the returned stream,
+    /// never from a detached background task. Dropping the stream therefore
+    /// drops the response body and closes the underlying connection, and the
+    /// provider stops generating. Nothing keeps running in the background and
+    /// no tokens are burned on output nobody will read.
+    ///
+    /// Two consequences worth planning for:
+    ///
+    /// - A generation cancelled this way produces **no terminal event** — no
+    ///   `Done`, no usage. Providers bill for what they generated before the
+    ///   abort, so a server that meters usage cannot rely on the final usage
+    ///   event alone.
+    /// - Cancellation propagates through wrappers. Dropping the future or
+    ///   stream returned by [`generate_stream_events`](Self::generate_stream_events),
+    ///   [`stream_wire_events`](Self::stream_wire_events), or
+    ///   [`stream_accumulated`](Self::stream_accumulated) — including when the
+    ///   whole task is cancelled by `tokio::time::timeout` or by an axum client
+    ///   disconnect — aborts the provider request just the same.
     ///
     /// # Errors
     ///
@@ -1277,6 +1504,11 @@ impl<'a, ClientModelState> RequestBuilder<'a, PromptReady, ModelReady, ClientMod
     ///
     /// Only text and the terminating event are accumulated, so tool calls are
     /// not represented in the returned response.
+    ///
+    /// # Cancellation
+    ///
+    /// Dropping the returned future aborts the upstream provider request. See
+    /// the "Cancellation" section of [`stream`](Self::stream).
     ///
     /// # Errors
     ///

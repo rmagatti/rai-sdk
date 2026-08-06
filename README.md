@@ -19,7 +19,8 @@
 - **Typestate request builders**: `.generate()` is only available after a prompt and model are available at compile time.
 - **Structured output**: derive `JsonSchema` and call `.generate_structured::<T>()` or `.generate_structured_once::<T>()`.
 - **Tool calling**: register typed async tools; `generate()` executes tool calls and feeds results back to the model until a final answer is produced.
-- **Streaming**: consume provider stream events directly, high-level stream events, or use `stream_accumulated()` to stream internally and return a full response.
+- **Streaming**: consume provider stream events directly, high-level stream events, or use `stream_accumulated()` to stream internally and return a full response. Dropping a stream aborts the upstream provider request.
+- **Proxyable streams**: `stream_wire_events()` yields serializable events so a server can re-emit a generation to its own clients over SSE, and `StreamAccumulator` reassembles them on the far side.
 - **Retry/backoff**: transient `RateLimit`, `Timeout`, and HTTP errors are retried with configurable exponential backoff and jitter.
 - **Multimodal prompts**: send text, image, audio, video, and file content blocks. Provider support varies.
 
@@ -305,6 +306,83 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+## Proxying a Stream Over SSE
+
+When your server holds the provider credentials and streams results on to a desktop or browser client, the events have to cross a wire. `stream_wire_events()` yields `WireStreamEvent`s, which serialize to a tagged JSON object — one SSE `data:` payload each.
+
+```text
+  client ──POST──▶ your server ──rai-sdk──▶ provider
+         ◀──SSE─── WireStreamEvent ◀────────┘
+```
+
+```rust
+use futures::StreamExt;
+use rai_sdk::{ClientBuilder, Model};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let client = ClientBuilder::new()
+        .from_env()
+        .model(Model::gpt4o_mini())
+        .build()?;
+
+    let mut events = client
+        .request()
+        .prompt("Explain SSE in one sentence.")
+        .stream_wire_events()
+        .await?;
+
+    while let Some(event) = events.next().await {
+        // event: text_delta
+        // data: {"type":"text_delta","text":"Server-sent"}
+        println!("event: {}\ndata: {}\n", event.tag(), serde_json::to_string(&event)?);
+    }
+
+    Ok(())
+}
+```
+
+On the receiving side, `StreamAccumulator` is the client-side counterpart of `stream_accumulated()`:
+
+```rust
+use rai_sdk::wire::{StreamAccumulator, WireStreamEvent};
+
+fn reassemble(payloads: &[String]) -> Result<rai_sdk::Response, Box<dyn std::error::Error>> {
+    let mut accumulator = StreamAccumulator::new();
+    for payload in payloads {
+        accumulator.push(serde_json::from_str::<WireStreamEvent>(payload)?)?;
+    }
+    Ok(accumulator.finish()?)
+}
+```
+
+`cargo run --example sse_proxy` runs the whole loop — axum handler, SSE re-emission, client-side reassembly — in one process.
+
+### Wire format
+
+Unlike the other streaming methods, `stream_wire_events()` items are not `Result`s. Once the stream is open every outcome is an event, tagged with a `"type"` discriminant:
+
+| `"type"` | Meaning |
+| --- | --- |
+| `message_start` | First event of every stream; names the protocol version, model, and provider. |
+| `text_delta` | Append this text to the output so far. |
+| `tool_call_start` / `tool_call_delta` / `tool_call_end` | A tool call, first incrementally and then assembled. |
+| `tool_result` | The output of executing a tool call. Only a proxy that runs tools itself emits this. |
+| `usage` | Token counts, emitted once just before the terminal event. |
+| `message_stop` | Terminal event of a successful stream. |
+| `turn_complete` | An assembled `ConversationTurn`, for history. |
+| `error` | Terminal event of a failed stream. |
+
+A mid-stream provider failure arrives as `error` rather than as a truncated response, so a client can tell "the provider refused" from "the network died" — the latter being a stream that ends with no terminal event at all. `StreamAccumulator::finish()` enforces that distinction.
+
+**The `"type"` strings and each event's field names are a compatibility surface.** A server and a client can be built from different `rai-sdk` versions, so renaming or removing one is a breaking change and will be called out in the changelog; adding a variant is not. `WireStreamEvent` and `WireErrorKind` are both `#[non_exhaustive]`, and an unrecognized error kind deserializes into `WireErrorKind::Other`, so match with a catch-all arm. `WIRE_PROTOCOL_VERSION` names the current revision of the framing and rides on every `message_start`.
+
+## Cancelling a Stream
+
+Dropping a stream aborts the upstream provider request. Every streaming method is driven entirely by its consumer — the provider's response body is polled from inside the returned stream, never from a detached background task — so dropping the stream closes the connection and the provider stops generating. No orphaned generation keeps burning tokens.
+
+That holds when the surrounding task is cancelled rather than the stream explicitly dropped, which is what a `tokio::time::timeout` or a web-framework client disconnect looks like. Note that a cancelled generation reports no usage, so metering cannot rely on the final usage event alone.
+
 ## Multimodal Prompt
 
 ```rust
@@ -372,6 +450,7 @@ Run bundled examples from this repository:
 cargo run --example basic_chat
 cargo run --example structured_output
 cargo run --example tool_calling
+cargo run --example sse_proxy
 ```
 
 ## Notes
@@ -379,6 +458,7 @@ cargo run --example tool_calling
 - `generate()` auto-executes registered tools. `generate_once()` does not.
 - `generate_structured()` may use tools before producing typed output. `generate_structured_once()` ignores configured tools.
 - Streaming with registered tools is intentionally rejected by the raw streaming API.
+- Dropping a stream aborts the upstream provider request, so a cancelled generation reports no usage.
 - Provider availability is based on enabled Cargo features and configured credentials.
 
 ## Documentation
