@@ -6,7 +6,7 @@
 [![license](https://img.shields.io/crates/l/rai-sdk.svg)](#license)
 [![MSRV](https://img.shields.io/badge/MSRV-1.86-blue.svg)](https://blog.rust-lang.org/2025/04/03/Rust-1.86.0.html)
 
-`rai-sdk` is a Rust SDK for building backend AI workflows across OpenAI, Anthropic, and OpenRouter. It provides typed model selection, typestate request builders, structured output validation, streaming, retry/backoff, multimodal prompts, and automatic tool execution loops.
+`rai-sdk` is a Rust SDK for building backend AI workflows across OpenAI, Anthropic, OpenRouter, and any OpenAI-compatible endpoint such as Ollama, vLLM, or LM Studio. It provides typed model selection, typestate request builders, structured output validation, streaming, retry/backoff, multimodal prompts, and automatic tool execution loops.
 
 - **API reference**: <https://docs.rs/rai-sdk>
 - **Guide**: <https://rmagatti.github.io/rai-sdk/>
@@ -21,6 +21,7 @@
 - **Tool calling**: register typed async tools; `generate()` executes tool calls and feeds results back to the model until a final answer is produced.
 - **Streaming**: consume provider stream events directly, high-level stream events, or use `stream_accumulated()` to stream internally and return a full response. Dropping a stream aborts the upstream provider request.
 - **Proxyable streams**: `stream_wire_events()` yields serializable events so a server can re-emit a generation to its own clients over SSE, and `StreamAccumulator` reassembles them on the far side.
+- **Local and self-hosted models**: point a client at any OpenAI-compatible endpoint — Ollama, vLLM, LM Studio — with no API key required, and get a typed error rather than an opaque HTTP failure when the endpoint cannot do tools or structured output.
 - **Retry/backoff**: transient `RateLimit`, `Timeout`, and HTTP errors are retried with configurable exponential backoff and jitter.
 - **Multimodal prompts**: send text, image, audio, video, and file content blocks. Provider support varies.
 
@@ -47,9 +48,11 @@ The minimum supported Rust version is **1.86**.
 
 Providers (all enabled by default):
 
-- `openai` — OpenAI Chat Completions
+- `openai` — OpenAI Chat Completions, and OpenAI-compatible endpoints (Ollama, vLLM, LM Studio)
 - `anthropic` — Anthropic Messages
 - `openrouter` — OpenRouter (aggregates many vendors)
+
+The OpenAI-compatible provider has no feature of its own: it is the same wire format, reusing the `openai` module's request builder and stream parser, so a build that only talks to local models enables `openai` and nothing else.
 
 TLS backend (at least one required when a provider is enabled):
 
@@ -109,6 +112,8 @@ export AI_RETRY_JITTER="true"
 
 You can also configure everything in code with `ClientBuilder` and `RetryConfig`.
 
+OpenAI-compatible endpoints are the exception: they have no environment variables and are always configured per client, because one process routinely talks to several. `OPENAI_BASE_URL` keeps its existing meaning and still redirects only the real OpenAI provider.
+
 ## Basic Chat
 
 ```rust
@@ -158,6 +163,91 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 Use curated OpenRouter constructors like `Model::openrouter_gpt5()`, `Model::openrouter_deepseek_r1()`, and `Model::openrouter_qwen3_coder()`, or pass any provider model ID with `Model::openrouter_custom("vendor/model")`.
+
+## Local and Self-Hosted Models
+
+Ollama, vLLM, LM Studio, llama.cpp's server, and most inference gateways serve `POST {base_url}/chat/completions` in OpenAI's format. Name the endpoint on the client and the rest of the SDK is unchanged — same request builder, same streaming, same structured output.
+
+```rust
+use rai_sdk::{ClientBuilder, Model};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let client = ClientBuilder::new()
+        .ollama() // http://localhost:11434/v1
+        .model(Model::openai_compatible("llama3.1:8b"))
+        .build()?;
+
+    let response = client
+        .request()
+        .prompt("Explain the borrow checker in two sentences.")
+        .generate()
+        .await?;
+
+    println!("{}", response.text());
+    Ok(())
+}
+```
+
+For anything other than Ollama's default address, name the endpoint yourself. An API key is optional: with none configured, no `Authorization` header is sent at all.
+
+```rust
+use rai_sdk::{ClientBuilder, Model};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let vllm = ClientBuilder::new()
+        .openai_compatible_base_url("http://localhost:8000/v1")
+        .model(Model::openai_compatible("Qwen/Qwen2.5-7B-Instruct"))
+        .build()?;
+
+    let gateway = ClientBuilder::new()
+        .openai_compatible_base_url("https://gateway.internal.example/v1")
+        .openai_compatible_key("shared-secret")
+        .model(Model::openai_compatible("mixtral-8x7b"))
+        .build()?;
+
+    println!("{vllm:?} {gateway:?}");
+    Ok(())
+}
+```
+
+The endpoint is per client, so those two coexist in one process with their own credentials and capabilities.
+
+### Capability degradation
+
+"OpenAI-compatible" describes a wire format, not a feature set: a small local model may not call tools, and a runtime may not honor `response_format`. Those failures arrive as `Error::CapabilityUnsupported`, distinct from the generic HTTP and request errors, so falling back is a match arm rather than a string search.
+
+```rust
+use rai_sdk::{Capability, ClientBuilder, EndpointCapabilities, Model, Tool};
+
+async fn ask(tool: Tool) -> Result<(), Box<dyn std::error::Error>> {
+    let client = ClientBuilder::new()
+        .ollama()
+        .model(Model::openai_compatible("llama3.1:8b"))
+        .build()?;
+
+    match client.request().tool(tool).prompt("What is the weather?").generate().await {
+        Ok(response) => println!("{}", response.text()),
+        Err(error) if error.unsupported_capability() == Some(Capability::ToolCalling) => {
+            // Retry without tools, pick another model, ask the user...
+        }
+        Err(error) => return Err(error.into()),
+    }
+
+    // Or state the gap up front: the request then fails locally, before any
+    // HTTP call is made.
+    let text_only = ClientBuilder::new()
+        .ollama()
+        .openai_compatible_capabilities(EndpointCapabilities::default().with_tool_calling(false))
+        .model(Model::openai_compatible("gemma3:4b"))
+        .build()?;
+
+    println!("{text_only:?}");
+    Ok(())
+}
+```
+
+Capabilities are declared, never probed: auto-detection would cost a round trip on every client build and still be wrong per model.
 
 ## Structured Output
 
@@ -451,6 +541,7 @@ cargo run --example basic_chat
 cargo run --example structured_output
 cargo run --example tool_calling
 cargo run --example sse_proxy
+cargo run --example local_model   # needs no API key, just a local endpoint
 ```
 
 ## Notes
@@ -459,7 +550,8 @@ cargo run --example sse_proxy
 - `generate_structured()` may use tools before producing typed output. `generate_structured_once()` ignores configured tools.
 - Streaming with registered tools is intentionally rejected by the raw streaming API.
 - Dropping a stream aborts the upstream provider request, so a cancelled generation reports no usage.
-- Provider availability is based on enabled Cargo features and configured credentials.
+- Provider availability is based on enabled Cargo features and configured credentials. An OpenAI-compatible endpoint is available once its base URL is set, with or without a key.
+- OpenAI-compatible endpoint capabilities are declared, not detected. The default assumes full compatibility.
 
 ## Documentation
 

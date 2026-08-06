@@ -57,6 +57,8 @@ pub enum Model {
     Anthropic(AnthropicModel),
     /// A model served through OpenRouter's aggregating API.
     OpenRouter(OpenRouterModel),
+    /// A model served by the client's configured OpenAI-compatible endpoint.
+    OpenAICompatible(OpenAICompatibleModel),
 }
 
 impl Model {
@@ -66,6 +68,7 @@ impl Model {
             Model::OpenAI(m) => m.as_str(),
             Model::Anthropic(m) => m.as_str(),
             Model::OpenRouter(m) => m.as_str(),
+            Model::OpenAICompatible(m) => m.as_str(),
         }
     }
 
@@ -75,6 +78,7 @@ impl Model {
             Model::OpenAI(_) => ProviderKind::OpenAI,
             Model::Anthropic(_) => ProviderKind::Anthropic,
             Model::OpenRouter(_) => ProviderKind::OpenRouter,
+            Model::OpenAICompatible(_) => ProviderKind::OpenAICompatible,
         }
     }
 
@@ -255,6 +259,27 @@ impl Model {
     /// Create a model from a custom OpenRouter model string.
     pub fn openrouter_custom(name: impl Into<String>) -> Self {
         Model::OpenRouter(OpenRouterModel::Custom(name.into()))
+    }
+
+    /// Name a model served by the client's OpenAI-compatible endpoint.
+    ///
+    /// There is no catalog to pick from: the identifier is whatever the
+    /// endpoint calls the model, such as `llama3.1:8b` on Ollama or a
+    /// filesystem path on vLLM. Which endpoint serves it is a property of the
+    /// client — see
+    /// [`ClientBuilder::openai_compatible_base_url`](crate::ClientBuilder::openai_compatible_base_url).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rai_sdk::{Model, ProviderKind};
+    ///
+    /// let model = Model::openai_compatible("llama3.1:8b");
+    /// assert_eq!(model.as_str(), "llama3.1:8b");
+    /// assert_eq!(model.provider(), ProviderKind::OpenAICompatible);
+    /// ```
+    pub fn openai_compatible(name: impl Into<String>) -> Self {
+        Model::OpenAICompatible(OpenAICompatibleModel::new(name))
     }
 
     /// Select [`OpenRouterModel::Auto`] (`openrouter/auto`).
@@ -922,6 +947,65 @@ impl std::str::FromStr for OpenRouterModel {
         };
 
         Ok(model)
+    }
+}
+
+/// A model identifier served by an OpenAI-compatible endpoint.
+///
+/// The other catalogs in this module enumerate a vendor's published models and
+/// keep a `Custom(String)` escape hatch. An OpenAI-compatible endpoint has no
+/// published catalog — the identifiers are whatever the operator loaded, like
+/// `llama3.1:8b`, `qwen2.5-coder:14b`, or `/models/Mistral-7B-Instruct` — so
+/// this type is the escape hatch and nothing else.
+///
+/// # Examples
+///
+/// ```
+/// use rai_sdk::OpenAICompatibleModel;
+///
+/// let model = OpenAICompatibleModel::new("llama3.1:8b");
+/// assert_eq!(model.as_str(), "llama3.1:8b");
+/// assert_eq!(model, "llama3.1:8b".parse().unwrap());
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(transparent)]
+pub struct OpenAICompatibleModel(String);
+
+impl OpenAICompatibleModel {
+    /// Name a model exactly as the endpoint knows it.
+    pub fn new(name: impl Into<String>) -> Self {
+        Self(name.into())
+    }
+
+    /// The model identifier sent in the request body.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for OpenAICompatibleModel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::str::FromStr for OpenAICompatibleModel {
+    type Err = std::convert::Infallible;
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        Ok(Self::new(value))
+    }
+}
+
+impl From<String> for OpenAICompatibleModel {
+    fn from(value: String) -> Self {
+        Self::new(value)
+    }
+}
+
+impl From<&str> for OpenAICompatibleModel {
+    fn from(value: &str) -> Self {
+        Self::new(value)
     }
 }
 

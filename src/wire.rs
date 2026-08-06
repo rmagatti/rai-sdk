@@ -495,6 +495,8 @@ pub enum WireErrorKind {
     ProviderNotConfigured,
     /// The provider's Cargo feature is disabled in the server build.
     ProviderNotEnabled,
+    /// The endpoint does not implement a capability the request needed.
+    CapabilityUnsupported,
     /// The provider filtered the content.
     ContentFiltered,
     /// The SDK was misconfigured.
@@ -536,6 +538,7 @@ impl WireErrorKind {
             Self::ModelNotAvailable => "model_not_available",
             Self::ProviderNotConfigured => "provider_not_configured",
             Self::ProviderNotEnabled => "provider_not_enabled",
+            Self::CapabilityUnsupported => "capability_unsupported",
             Self::ContentFiltered => "content_filtered",
             Self::Config => "config",
             Self::Serialization => "serialization",
@@ -562,6 +565,7 @@ impl From<&str> for WireErrorKind {
             "model_not_available" => Self::ModelNotAvailable,
             "provider_not_configured" => Self::ProviderNotConfigured,
             "provider_not_enabled" => Self::ProviderNotEnabled,
+            "capability_unsupported" => Self::CapabilityUnsupported,
             "content_filtered" => Self::ContentFiltered,
             "config" => Self::Config,
             "serialization" => Self::Serialization,

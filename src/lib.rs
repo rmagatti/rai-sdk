@@ -30,6 +30,12 @@
 //!   with configurable exponential backoff and jitter via [`RetryConfig`].
 //! - **Multimodal prompts** — build prompts from text, image, audio, video, and
 //!   file [`ContentBlock`]s. Provider support varies.
+//! - **Local and self-hosted models** — point a client at any endpoint speaking
+//!   the OpenAI Chat Completions format with
+//!   [`ClientBuilder::openai_compatible_base_url`] (or
+//!   [`ClientBuilder::ollama`]) and name models with
+//!   [`Model::openai_compatible`]. See the `provider::openai_compatible`
+//!   module, which the `openai` feature gates.
 //!
 //! # Quickstart
 //!
@@ -65,6 +71,11 @@
 //! The `openai`, `anthropic`, and `openrouter` features are all enabled by
 //! default and gate the corresponding provider support. Disable the defaults to
 //! compile against only the providers you use.
+//!
+//! `openai` additionally gates the OpenAI-compatible provider, which reuses
+//! that module's request builder and stream parser rather than duplicating
+//! them. A build that talks only to local models therefore enables `openai`
+//! and nothing else.
 //!
 //! Enabling a provider also requires at least one TLS backend:
 //!
@@ -144,14 +155,14 @@ pub mod tool;
 pub mod wire;
 
 pub use client::{Client, ClientBuilder, RequestBuilder};
-pub use config::Config;
-pub use error::{Error, ProviderKind, Result, ToolArgumentIssue};
+pub use config::{Config, EndpointCapabilities};
+pub use error::{Capability, Error, ProviderKind, Result, ToolArgumentIssue};
 pub use generation::GenerationConfig;
 pub use message::{
     ContentBlock, ImageSource, Message, Prompt, Response, Role, StreamChunk, StructuredOutput,
     ToolCall, ToolDefinition, Usage,
 };
-pub use model::{AnthropicModel, Model, OpenAIModel, OpenRouterModel};
+pub use model::{AnthropicModel, Model, OpenAICompatibleModel, OpenAIModel, OpenRouterModel};
 pub use retry::RetryConfig;
 pub use schemars::{self, JsonSchema};
 pub use tool::{Tool, ToolContext};

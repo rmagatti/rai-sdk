@@ -45,6 +45,17 @@ pub fn anthropic_builder(base_url: &str) -> ClientBuilder {
         .no_retry()
 }
 
+/// A client builder pointed at an OpenAI-compatible endpoint, with retries off.
+///
+/// Deliberately sets **no** API key: an unauthenticated local endpoint is the
+/// common case, and it is the case where no `Authorization` header may be sent.
+/// Tests that need a credential add one with `openai_compatible_key`.
+pub fn openai_compatible_builder(base_url: &str) -> ClientBuilder {
+    ClientBuilder::new()
+        .openai_compatible_base_url(base_url.to_string())
+        .no_retry()
+}
+
 /// An OpenRouter-backed client builder pointed at `base_url`, with retries off.
 pub fn openrouter_builder(base_url: &str) -> ClientBuilder {
     ClientBuilder::new()

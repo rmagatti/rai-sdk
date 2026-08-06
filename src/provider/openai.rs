@@ -8,6 +8,14 @@
 //!
 //! Reasoning (o-series) models do not accept `temperature`/`top_p`, so those
 //! fields are dropped automatically for them.
+//!
+//! # Shared with the OpenAI-compatible provider
+//!
+//! The Chat Completions request shape and SSE framing are not OpenAI-specific,
+//! so this module's internal request builder and stream parser are also used by
+//! [`openai_compatible`](super::openai_compatible). Both are parameterized
+//! where the two endpoints legitimately differ, rather than branching on which
+//! provider called them.
 
 use std::pin::Pin;
 
@@ -165,7 +173,7 @@ impl OpenAIProvider {
 
         let byte_stream = response.bytes_stream();
 
-        Ok(Box::pin(Self::parse_provider_sse_stream(byte_stream)))
+        Ok(Box::pin(parse_chat_completions_sse(byte_stream)))
     }
 
     fn build_request(
@@ -176,112 +184,18 @@ impl OpenAIProvider {
         stream: bool,
         tool_definitions: Option<&[ToolDefinition]>,
     ) -> OpenAIRequest {
-        let messages: Vec<OpenAIMessage> = prompt
-            .messages
-            .iter()
-            .map(|m| {
-                let content = if m.is_multimodal() {
-                    Some(OpenAIMessageContent::Blocks(
-                        m.content_blocks
-                            .iter()
-                            .map(|block| match block {
-                                ContentBlock::Text { text } => {
-                                    OpenAIContentBlock::Text { text: text.clone() }
-                                }
-                                ContentBlock::Image { source } => {
-                                    let url = match source {
-                                        ImageSource::Url { url } => url.clone(),
-                                        ImageSource::Base64 { media_type, data } => {
-                                            format!("data:{media_type};base64,{data}")
-                                        }
-                                    };
-                                    OpenAIContentBlock::ImageUrl {
-                                        image_url: OpenAIImageUrl { url },
-                                    }
-                                }
-                                _ => unimplemented!(
-                                    "Audio, Video, and File blocks are not yet supported for OpenAI"
-                                ),
-                            })
-                            .collect(),
-                    ))
-                } else if !m.content.is_empty() {
-                    Some(OpenAIMessageContent::Text(m.content.clone()))
-                } else {
-                    None
-                };
-
-                OpenAIMessage {
-                    role: m.role.as_str().to_string(),
-                    content,
-                    tool_call_id: m.tool_call_id.clone(),
-                    tool_calls: if m.tool_calls.is_empty() {
-                        None
-                    } else {
-                        Some(
-                            m.tool_calls
-                                .iter()
-                                .map(|tc| OpenAIRequestToolCall {
-                                    id: tc.id.clone(),
-                                    r#type: "function".to_string(),
-                                    function: OpenAIRequestFunctionCall {
-                                        name: tc.name.clone(),
-                                        arguments: tc.arguments.to_string(),
-                                    },
-                                })
-                                .collect(),
-                        )
-                    },
-                }
-            })
-            .collect();
-
-        let mut request = OpenAIRequest {
-            model: model.as_str().to_string(),
-            messages,
-            stream: Some(stream),
-            stream_options: stream.then_some(OpenAIStreamOptions {
-                include_usage: true,
-            }),
-            temperature: config.temperature,
-            max_tokens: config.max_tokens,
-            top_p: config.top_p,
-            stop: config.stop_sequences.clone(),
-            response_format: None,
-            tools: tool_definitions.map(|tools| {
-                tools
-                    .iter()
-                    .map(|tool| OpenAIToolDefinition {
-                        r#type: "function".to_string(),
-                        function: OpenAIFunctionDefinition {
-                            name: tool.name.clone(),
-                            description: tool.description.clone(),
-                            parameters: tool.input_schema.clone(),
-                        },
-                    })
-                    .collect()
-            }),
-        };
-
-        if let Some(json_schema) = config.json_schema.clone() {
-            request.response_format = Some(OpenAIResponseFormat::JsonSchema {
-                json_schema: OpenAIJsonSchema {
-                    name: "structured_output".to_string(),
-                    schema: json_schema,
-                    strict: true,
-                },
-            });
-        } else if config.json_mode == Some(true) {
-            request.response_format = Some(OpenAIResponseFormat::JsonObject);
-        }
-
-        // Reasoning models (o1, o3) don't support temperature
-        if model.is_reasoning_model() {
-            request.temperature = None;
-            request.top_p = None;
-        }
-
-        request
+        build_chat_request(
+            prompt,
+            config,
+            ChatRequestOptions {
+                model: model.as_str(),
+                stream,
+                tool_definitions,
+                // Reasoning models (o1, o3) don't support temperature.
+                drop_sampling_params: model.is_reasoning_model(),
+                strict_json_schema: true,
+            },
+        )
     }
 
     fn parse_response(&self, model: &OpenAIModel, response: OpenAIResponse) -> Result<Response> {
@@ -338,8 +252,7 @@ impl OpenAIProvider {
     }
 
     fn parse_error(&self, status: u16, body: &str) -> Error {
-        if let Ok(error_response) = serde_json::from_str::<OpenAIErrorResponse>(body) {
-            let message = error_response.error.message;
+        if let Some(message) = parse_error_message(body) {
             return match status {
                 401 => Error::Auth {
                     provider: ProviderKind::OpenAI,
@@ -362,107 +275,280 @@ impl OpenAIProvider {
             message: format!("HTTP {status}: {body}"),
         }
     }
+}
 
-    fn parse_provider_sse_stream<S>(
-        byte_stream: S,
-    ) -> impl Stream<Item = Result<crate::provider::ProviderStreamEvent>>
-    where
-        S: Stream<Item = std::result::Result<Bytes, reqwest::Error>> + Send + 'static,
-    {
-        let mut buffer = String::new();
+// ── Shared Chat Completions plumbing ───────────────────────────────────────
 
-        async_stream::stream! {
-            tokio::pin!(byte_stream);
-            let mut current_tool_id: Option<String> = None;
+/// Pull the human-readable message out of a Chat Completions error body.
+///
+/// Returns `None` when the body is not the documented `{"error":{"message":…}}`
+/// envelope, which is the caller's cue to fall back to reporting the raw status
+/// and text.
+pub(crate) fn parse_error_message(body: &str) -> Option<String> {
+    serde_json::from_str::<OpenAIErrorResponse>(body)
+        .ok()
+        .map(|response| response.error.message)
+}
 
-            while let Some(chunk_result) = byte_stream.next().await {
-                match chunk_result {
-                    Ok(bytes) => {
-                        buffer.push_str(&String::from_utf8_lossy(&bytes));
+/// The parts of a Chat Completions request that differ between the endpoints
+/// this crate talks to.
+///
+/// Everything else — message translation, sampling parameters, tool
+/// definitions, `response_format` selection — is identical, so it lives in
+/// [`build_chat_request`] once.
+pub(crate) struct ChatRequestOptions<'a> {
+    /// Model identifier to send in the body.
+    pub model: &'a str,
+    /// Whether to ask for an SSE stream.
+    pub stream: bool,
+    /// Tools to advertise, if any.
+    pub tool_definitions: Option<&'a [ToolDefinition]>,
+    /// Whether to omit `temperature`/`top_p`, which o-series models reject.
+    pub drop_sampling_params: bool,
+    /// Value for `response_format.json_schema.strict`.
+    ///
+    /// OpenAI's strict mode is a hard guarantee worth asking for. Third-party
+    /// endpoints implement it unevenly — some reject the flag, some accept and
+    /// ignore it — and this crate validates structured output against the
+    /// schema client-side regardless, so they get `false`.
+    pub strict_json_schema: bool,
+}
 
-                        while let Some(event_end) = buffer.find("\n\n") {
-                            let event = buffer[..event_end].to_string();
-                            buffer = buffer[event_end + 2..].to_string();
-
-                            for line in event.lines() {
-                                if let Some(data) = line.strip_prefix("data: ") {
-                                    if data == "[DONE]" {
-                                        return;
+/// Translate a prompt and generation config into a Chat Completions body.
+pub(crate) fn build_chat_request(
+    prompt: &Prompt,
+    config: &crate::generation::GenerationConfig,
+    options: ChatRequestOptions<'_>,
+) -> OpenAIRequest {
+    let messages: Vec<OpenAIMessage> = prompt
+        .messages
+        .iter()
+        .map(|m| {
+            let content = if m.is_multimodal() {
+                Some(OpenAIMessageContent::Blocks(
+                    m.content_blocks
+                        .iter()
+                        .map(|block| match block {
+                            ContentBlock::Text { text } => {
+                                OpenAIContentBlock::Text { text: text.clone() }
+                            }
+                            ContentBlock::Image { source } => {
+                                let url = match source {
+                                    ImageSource::Url { url } => url.clone(),
+                                    ImageSource::Base64 { media_type, data } => {
+                                        format!("data:{media_type};base64,{data}")
                                     }
+                                };
+                                OpenAIContentBlock::ImageUrl {
+                                    image_url: OpenAIImageUrl { url },
+                                }
+                            }
+                            _ => unimplemented!(
+                                "Audio, Video, and File blocks are not yet supported for Chat Completions"
+                            ),
+                        })
+                        .collect(),
+                ))
+            } else if !m.content.is_empty() {
+                Some(OpenAIMessageContent::Text(m.content.clone()))
+            } else {
+                None
+            };
 
-                                    match serde_json::from_str::<OpenAIStreamResponse>(data) {
-                                        Ok(stream_response) => {
-                                            if let Some(usage) = stream_response.usage {
-                                                yield Ok(crate::provider::ProviderStreamEvent::Done {
-                                                    finish_reason: stream_response.choices.first().and_then(|c| c.finish_reason.clone()).or(Some("stop".to_string())),
-                                                    usage: Some(Usage {
-                                                        prompt_tokens: Some(usage.prompt_tokens),
-                                                        completion_tokens: Some(usage.completion_tokens),
-                                                        total_tokens: Some(usage.total_tokens),
-                                                    }),
-                                                });
-                                                continue;
+            OpenAIMessage {
+                role: m.role.as_str().to_string(),
+                content,
+                tool_call_id: m.tool_call_id.clone(),
+                tool_calls: if m.tool_calls.is_empty() {
+                    None
+                } else {
+                    Some(
+                        m.tool_calls
+                            .iter()
+                            .map(|tc| OpenAIRequestToolCall {
+                                id: tc.id.clone(),
+                                r#type: "function".to_string(),
+                                function: OpenAIRequestFunctionCall {
+                                    name: tc.name.clone(),
+                                    arguments: tc.arguments.to_string(),
+                                },
+                            })
+                            .collect(),
+                    )
+                },
+            }
+        })
+        .collect();
+
+    let mut request = OpenAIRequest {
+        model: options.model.to_string(),
+        messages,
+        stream: Some(options.stream),
+        stream_options: options.stream.then_some(OpenAIStreamOptions {
+            include_usage: true,
+        }),
+        temperature: config.temperature,
+        max_tokens: config.max_tokens,
+        top_p: config.top_p,
+        stop: config.stop_sequences.clone(),
+        response_format: None,
+        tools: options.tool_definitions.map(|tools| {
+            tools
+                .iter()
+                .map(|tool| OpenAIToolDefinition {
+                    r#type: "function".to_string(),
+                    function: OpenAIFunctionDefinition {
+                        name: tool.name.clone(),
+                        description: tool.description.clone(),
+                        parameters: tool.input_schema.clone(),
+                    },
+                })
+                .collect()
+        }),
+    };
+
+    if let Some(json_schema) = config.json_schema.clone() {
+        request.response_format = Some(OpenAIResponseFormat::JsonSchema {
+            json_schema: OpenAIJsonSchema {
+                name: "structured_output".to_string(),
+                schema: json_schema,
+                strict: options.strict_json_schema,
+            },
+        });
+    } else if config.json_mode == Some(true) {
+        request.response_format = Some(OpenAIResponseFormat::JsonObject);
+    }
+
+    if options.drop_sampling_params {
+        request.temperature = None;
+        request.top_p = None;
+    }
+
+    request
+}
+
+/// Decode a Chat Completions SSE body into [`ProviderStreamEvent`]s.
+///
+/// [`ProviderStreamEvent`]: crate::provider::ProviderStreamEvent
+///
+/// Shared with [`openai_compatible`](super::openai_compatible), whose endpoints
+/// diverge from OpenAI in ways this parser already tolerates:
+///
+/// - **`data:` with no space.** The SSE specification makes the space after the
+///   field name optional, and self-hosted servers differ; exactly one leading
+///   space is stripped when present.
+/// - **No `[DONE]` sentinel.** Some servers just close the body. The stream
+///   ends either way, on the sentinel or on end of input.
+/// - **No usage.** `stream_options.include_usage` is advisory, and servers that
+///   ignore it emit a `Done` carrying only the finish reason.
+/// - **Tool-call deltas without an `id`.** Continuation chunks are attributed
+///   to the call already in flight.
+///
+/// Payloads that fail to parse are logged and skipped rather than ending the
+/// stream, so one unrecognized frame cannot truncate a response.
+pub(crate) fn parse_chat_completions_sse<S>(
+    byte_stream: S,
+) -> impl Stream<Item = Result<crate::provider::ProviderStreamEvent>>
+where
+    S: Stream<Item = std::result::Result<Bytes, reqwest::Error>> + Send + 'static,
+{
+    let mut buffer = String::new();
+
+    async_stream::stream! {
+    tokio::pin!(byte_stream);
+    let mut current_tool_id: Option<String> = None;
+
+    while let Some(chunk_result) = byte_stream.next().await {
+        match chunk_result {
+            Ok(bytes) => {
+                buffer.push_str(&String::from_utf8_lossy(&bytes));
+
+                while let Some(event_end) = buffer.find("\n\n") {
+                    let event = buffer[..event_end].to_string();
+                    buffer = buffer[event_end + 2..].to_string();
+
+                    for line in event.lines() {
+                        if let Some(field) = line.strip_prefix("data:") {
+                            let data = field.strip_prefix(' ').unwrap_or(field);
+                                if data == "[DONE]" {
+                                    return;
+                                }
+
+                                match serde_json::from_str::<OpenAIStreamResponse>(data) {
+                                    Ok(stream_response) => {
+                                        if let Some(usage) = stream_response.usage {
+                                            yield Ok(crate::provider::ProviderStreamEvent::Done {
+                                                finish_reason: stream_response.choices.first().and_then(|c| c.finish_reason.clone()).or(Some("stop".to_string())),
+                                                usage: Some(Usage {
+                                                    prompt_tokens: Some(usage.prompt_tokens),
+                                                    completion_tokens: Some(usage.completion_tokens),
+                                                    total_tokens: Some(usage.total_tokens),
+                                                }),
+                                            });
+                                            continue;
+                                        }
+
+                                        if let Some(choice) = stream_response.choices.first() {
+                                            if let Some(content) = &choice.delta.content {
+                                                if !content.is_empty() {
+                                                    yield Ok(crate::provider::ProviderStreamEvent::Text(content.clone()));
+                                                }
                                             }
 
-                                            if let Some(choice) = stream_response.choices.first() {
-                                                if let Some(content) = &choice.delta.content {
-                                                    if !content.is_empty() {
-                                                        yield Ok(crate::provider::ProviderStreamEvent::Text(content.clone()));
+                                            if let Some(tool_calls) = &choice.delta.tool_calls {
+                                                for tc in tool_calls {
+                                                    if let Some(id) = &tc.id {
+                                                        current_tool_id = Some(id.clone());
+                                                        let name = tc.function.as_ref().and_then(|f| f.name.clone()).unwrap_or_default();
+                                                        yield Ok(crate::provider::ProviderStreamEvent::ToolCallStart {
+                                                            id: id.clone(),
+                                                            name,
+                                                        });
                                                     }
-                                                }
-
-                                                if let Some(tool_calls) = &choice.delta.tool_calls {
-                                                    for tc in tool_calls {
-                                                        if let Some(id) = &tc.id {
-                                                            current_tool_id = Some(id.clone());
-                                                            let name = tc.function.as_ref().and_then(|f| f.name.clone()).unwrap_or_default();
-                                                            yield Ok(crate::provider::ProviderStreamEvent::ToolCallStart {
-                                                                id: id.clone(),
-                                                                name,
+                                                    if let Some(func) = &tc.function {
+                                                        if let Some(args) = &func.arguments {
+                                                            let id_to_use = current_tool_id.clone().unwrap_or_default();
+                                                            yield Ok(crate::provider::ProviderStreamEvent::ToolCallChunk {
+                                                                id: id_to_use,
+                                                                arguments: args.clone(),
                                                             });
                                                         }
-                                                        if let Some(func) = &tc.function {
-                                                            if let Some(args) = &func.arguments {
-                                                                let id_to_use = current_tool_id.clone().unwrap_or_default();
-                                                                yield Ok(crate::provider::ProviderStreamEvent::ToolCallChunk {
-                                                                    id: id_to_use,
-                                                                    arguments: args.clone(),
-                                                                });
-                                                            }
-                                                        }
                                                     }
                                                 }
+                                            }
 
-                                                if let Some(finish_reason) = &choice.finish_reason {
-                                                    yield Ok(crate::provider::ProviderStreamEvent::Done {
-                                                        finish_reason: Some(finish_reason.clone()),
-                                                        usage: None,
-                                                    });
-                                                }
+                                            if let Some(finish_reason) = &choice.finish_reason {
+                                                yield Ok(crate::provider::ProviderStreamEvent::Done {
+                                                    finish_reason: Some(finish_reason.clone()),
+                                                    usage: None,
+                                                });
                                             }
                                         }
-                                        Err(e) => {
-                                            debug!(error = %e, data = %data, "Failed to parse SSE chunk");
-                                        }
+                                    }
+                                    Err(e) => {
+                                        debug!(error = %e, data = %data, "Failed to parse SSE chunk");
                                     }
                                 }
                             }
                         }
                     }
-                    Err(e) => {
-                        yield Err(Error::Stream(e.to_string()));
-                        return;
-                    }
+                }
+                Err(e) => {
+                    yield Err(Error::Stream(e.to_string()));
+                    return;
                 }
             }
         }
     }
 }
 
-// ── OpenAI API types ───────────────────────────────────────────────────────
+// ── Chat Completions wire types ────────────────────────────────────────────
+//
+// Shared with the OpenAI-compatible provider, which sends and receives the same
+// shapes.
 
 #[derive(Debug, Serialize)]
-struct OpenAIRequest {
+pub(crate) struct OpenAIRequest {
     model: String,
     messages: Vec<OpenAIMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -30,7 +30,7 @@ use crate::{
 };
 
 #[cfg(feature = "openai")]
-use crate::provider::OpenAIProvider;
+use crate::provider::{OpenAICompatibleProvider, OpenAIProvider};
 
 #[cfg(feature = "anthropic")]
 use crate::provider::AnthropicProvider;
@@ -100,6 +100,9 @@ pub struct Client<ModelState = ModelMissing> {
     #[cfg(feature = "openai")]
     openai: Option<OpenAIProvider>,
 
+    #[cfg(feature = "openai")]
+    openai_compatible: Option<OpenAICompatibleProvider>,
+
     #[cfg(feature = "anthropic")]
     anthropic: Option<AnthropicProvider>,
 
@@ -115,6 +118,9 @@ impl<ModelState> std::fmt::Debug for Client<ModelState> {
 
         #[cfg(feature = "openai")]
         s.field("openai", &self.openai);
+
+        #[cfg(feature = "openai")]
+        s.field("openai_compatible", &self.openai_compatible);
 
         #[cfg(feature = "anthropic")]
         s.field("anthropic", &self.anthropic);
@@ -218,6 +224,29 @@ impl<ModelState> Client<ModelState> {
             None
         };
 
+        // Configured by base URL rather than by credential: an OpenAI-compatible
+        // endpoint often needs no key at all, so naming the endpoint is what
+        // signals intent to use one.
+        #[cfg(feature = "openai")]
+        let openai_compatible = if config.openai_compatible_base_url().is_some() {
+            match OpenAICompatibleProvider::new(&config) {
+                Ok(provider) => {
+                    info!(
+                        base_url = provider.base_url(),
+                        "OpenAI-compatible provider initialized"
+                    );
+                    Some(provider)
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to initialize OpenAI-compatible provider");
+                    None
+                }
+            }
+        } else {
+            tracing::debug!("No OpenAI-compatible base URL configured, provider disabled");
+            None
+        };
+
         #[cfg(feature = "anthropic")]
         let anthropic = if config.anthropic_key().is_some() {
             match AnthropicProvider::new(&config) {
@@ -263,6 +292,8 @@ impl<ModelState> Client<ModelState> {
             state: PhantomData,
             #[cfg(feature = "openai")]
             openai,
+            #[cfg(feature = "openai")]
+            openai_compatible,
             #[cfg(feature = "anthropic")]
             anthropic,
             #[cfg(feature = "openrouter")]
@@ -355,6 +386,17 @@ impl<ModelState> Client<ModelState> {
                     .await
             }
 
+            #[cfg(feature = "openai")]
+            Model::OpenAICompatible(ref compatible_model) => {
+                let provider = self
+                    .openai_compatible
+                    .as_ref()
+                    .ok_or_else(|| Error::ProviderNotConfigured(ProviderKind::OpenAICompatible))?;
+                provider
+                    .generate(compatible_model, prompt, config, tool_definitions)
+                    .await
+            }
+
             #[cfg(feature = "anthropic")]
             Model::Anthropic(ref anthropic_model) => {
                 let provider = self
@@ -434,6 +476,17 @@ impl<ModelState> Client<ModelState> {
                 provider.generate_stream(openai_model, prompt, config).await
             }
 
+            #[cfg(feature = "openai")]
+            Model::OpenAICompatible(ref compatible_model) => {
+                let provider = self
+                    .openai_compatible
+                    .as_ref()
+                    .ok_or_else(|| Error::ProviderNotConfigured(ProviderKind::OpenAICompatible))?;
+                provider
+                    .generate_stream(compatible_model, prompt, config)
+                    .await
+            }
+
             #[cfg(feature = "anthropic")]
             Model::Anthropic(ref anthropic_model) => {
                 let provider = self
@@ -488,6 +541,9 @@ impl<ModelState> Client<ModelState> {
         match provider {
             #[cfg(feature = "openai")]
             ProviderKind::OpenAI => self.openai.is_some(),
+
+            #[cfg(feature = "openai")]
+            ProviderKind::OpenAICompatible => self.openai_compatible.is_some(),
 
             #[cfg(feature = "anthropic")]
             ProviderKind::Anthropic => self.anthropic.is_some(),
@@ -1822,6 +1878,94 @@ impl<ModelState> ClientBuilder<ModelState> {
     pub fn openai_base_url(mut self, url: impl Into<String>) -> Self {
         self.config.openai_base_url = Some(url.into());
         self
+    }
+
+    /// Point this client at an OpenAI-compatible endpoint.
+    ///
+    /// The URL is the API root serving `POST /chat/completions`, so it usually
+    /// ends in `/v1` — `http://localhost:8000/v1` for vLLM,
+    /// `http://localhost:1234/v1` for LM Studio. Setting it is what makes
+    /// [`ProviderKind::OpenAICompatible`] available; there is no default
+    /// endpoint and no environment variable, because the endpoint is a property
+    /// of this client rather than of the process. See
+    /// [`Config::openai_compatible_base_url`](crate::Config::openai_compatible_base_url).
+    ///
+    /// # Examples
+    ///
+    /// Two endpoints in one process, each with its own client:
+    ///
+    /// ```no_run
+    /// use rai_sdk::{ClientBuilder, Model};
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let local = ClientBuilder::new()
+    ///     .ollama()
+    ///     .model(Model::openai_compatible("llama3.1:8b"))
+    ///     .build()?;
+    ///
+    /// let cluster = ClientBuilder::new()
+    ///     .openai_compatible_base_url("https://vllm.internal.example/v1")
+    ///     .openai_compatible_key("shared-secret")
+    ///     .model(Model::openai_compatible("Qwen/Qwen2.5-7B-Instruct"))
+    ///     .build()?;
+    /// # let _ = (local, cluster);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn openai_compatible_base_url(mut self, url: impl Into<String>) -> Self {
+        self.config.openai_compatible_base_url = Some(url.into());
+        self
+    }
+
+    /// Set the bearer token for the OpenAI-compatible endpoint.
+    ///
+    /// Optional. With no key set, requests carry no `Authorization` header at
+    /// all, which is what a local runtime expects.
+    pub fn openai_compatible_key(mut self, key: impl Into<String>) -> Self {
+        self.config.openai_compatible_api_key = Some(key.into());
+        self
+    }
+
+    /// Declare what the OpenAI-compatible endpoint supports.
+    ///
+    /// Requests needing something it was declared not to support fail with
+    /// [`Error::CapabilityUnsupported`] before any HTTP call, instead of
+    /// reaching the endpoint and coming back as an opaque bad request.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use rai_sdk::{ClientBuilder, EndpointCapabilities, Model};
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let client = ClientBuilder::new()
+    ///     .ollama()
+    ///     .openai_compatible_capabilities(
+    ///         EndpointCapabilities::default().with_tool_calling(false),
+    ///     )
+    ///     .model(Model::openai_compatible("gemma3:4b"))
+    ///     .build()?;
+    /// # let _ = client;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn openai_compatible_capabilities(
+        mut self,
+        capabilities: crate::config::EndpointCapabilities,
+    ) -> Self {
+        self.config.openai_compatible_capabilities = Some(capabilities);
+        self
+    }
+
+    /// Point this client at a local Ollama server.
+    ///
+    /// Shorthand for
+    /// [`openai_compatible_base_url`](Self::openai_compatible_base_url) with
+    /// [`OLLAMA_BASE_URL`](crate::config::OLLAMA_BASE_URL)
+    /// (`http://localhost:11434/v1`). Pass the URL explicitly for any other
+    /// host or port.
+    pub fn ollama(self) -> Self {
+        self.openai_compatible_base_url(crate::config::OLLAMA_BASE_URL)
     }
 
     /// Set the Anthropic API key.
