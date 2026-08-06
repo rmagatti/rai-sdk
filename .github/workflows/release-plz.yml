@@ -37,18 +37,47 @@ name: Release-plz
 # Cargo.toml/Cargo.lock, and must still reach the "releasable commits" gate
 # below rather than being silently discarded by path alone.
 #
+# THE TOKEN TRAP. GitHub Actions deliberately does not let a push or tag made
+# with the automatic `GITHUB_TOKEN` trigger *other* workflow runs (its
+# anti-recursion guard). release.yml is a separate workflow, triggered by the
+# `vX.Y.Z` tag this job pushes — so if this job pushed that tag using
+# `GITHUB_TOKEN`, release.yml would simply never start, and nothing would
+# ever reach crates.io or get a GitHub Release, with no error anywhere to
+# point at why. A personal access token does not carry that restriction, so
+# this workflow requires a `RELEASE_PLZ_TOKEN` PAT secret and hard-fails (see
+# the "Require a release PAT" step below) instead of silently falling back to
+# `GITHUB_TOKEN` when it's absent — a silent fallback was considered and
+# rejected because it would make the chain look fully configured while
+# quietly never publishing anything.
+#
 # Maintainer checklist for this to work:
-#  1. This repository's ruleset on `main` lists the `github-actions` app
-#     (Integration id 15368) as an actor that is exempt from the ruleset's
-#     required-status-checks rule, so this workflow's own commit and tag are
-#     accepted the same way any already-reviewed, already-checked change
-#     would be. A brand new commit that was never itself pushed to a checked
-#     ref would otherwise fail that requirement on its own. No further
-#     setting is needed for the default GITHUB_TOKEN path.
-#  2. (Optional) A `RELEASE_PLZ_TOKEN` PAT secret can be used instead of
-#     GITHUB_TOKEN. If you add one, its owning account also needs to be
-#     covered by the branch ruleset's exemption, since that account — not
-#     the `github-actions` app — would be the one pushing.
+#  1. Create a fine-grained PAT and add it as the `RELEASE_PLZ_TOKEN`
+#     repository secret (Settings -> Secrets and variables -> Actions -> New
+#     repository secret):
+#       - github.com/settings/personal-access-tokens/new
+#       - Resource owner: the account that should own the token (typically
+#         the repo owner, since this is a personal, non-org repo).
+#       - Repository access: "Only select repositories" -> this repository.
+#       - Permissions -> Repository permissions -> Contents: "Read and
+#         write". No other permission is required.
+#       - Set an expiration and put a reminder on the calendar to rotate it
+#         before then; fine-grained PATs cannot be made non-expiring.
+#     Name the secret exactly `RELEASE_PLZ_TOKEN`.
+#  2. This repository's ruleset on `main` (see below and the PR that
+#     introduced this workflow for the exact `gh api` command) must exempt
+#     the push this token makes from the required-status-checks rule, or a
+#     brand new commit that was never itself pushed to a checked ref would
+#     fail that same requirement it's meant to enforce on everyone else.
+#     Concretely: a push authenticated with a PAT is attributed to the PAT's
+#     *owning user account*, not to the `github-actions` app (that
+#     attribution only happens for the default `GITHUB_TOKEN`, and GitHub's
+#     Rulesets API rejects `Integration`-type bypass entries for the
+#     built-in `github-actions` app on a personal, non-org-owned repository
+#     like this one — "Actor GitHub Actions integration must be part of the
+#     ruleset source or owner organization"). Since `RELEASE_PLZ_TOKEN` is a
+#     PAT owned by this repository's admin (step 1 above), the bypass entry
+#     that actually works here is `actor_type: RepositoryRole`, `actor_id: 5`
+#     (Repository admin), `bypass_mode: always`.
 #
 # CARGO_REGISTRY_TOKEN is not needed here: `publish = false` in
 # release-plz.toml means this workflow never calls `cargo publish`. That
@@ -76,6 +105,12 @@ jobs:
       !startsWith(github.event.head_commit.message, 'chore(release):')
     steps:
       - name: Checkout repository
+        # This checkout only needs to read history to decide whether there's
+        # anything releasable (the "Check for releasable commits" step
+        # below), so GITHUB_TOKEN is fine here even when RELEASE_PLZ_TOKEN is
+        # absent — the "Require a release PAT" step, gated on that decision,
+        # is what actually enforces the PAT requirement before anything is
+        # pushed.
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
@@ -114,6 +149,21 @@ jobs:
             echo "releasable=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Require a release PAT
+        # See "THE TOKEN TRAP" above: GITHUB_TOKEN-pushed tags never trigger
+        # release.yml, so a missing RELEASE_PLZ_TOKEN must fail this run
+        # loudly here, before anything is bumped, committed, or pushed —
+        # never fall back to GITHUB_TOKEN for the steps that actually push.
+        # The `secrets` context isn't readable from a step's `if:` (only
+        # from `env:`/`with:`/`run:`), so the secret is mirrored into `env`
+        # first and the `if:` reads it back from there.
+        if: steps.gate.outputs.releasable == 'true' && env.RELEASE_PLZ_TOKEN == ''
+        env:
+          RELEASE_PLZ_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+        run: |
+          echo "::error::RELEASE_PLZ_TOKEN repository secret is not set. Tags pushed with the default GITHUB_TOKEN do not trigger other workflows, so release.yml would never fire on the tag this job would push and nothing would ever publish. See the maintainer checklist at the top of this file to create the required fine-grained PAT."
+          exit 1
+
       - name: Configure git identity for the release bot
         if: steps.gate.outputs.releasable == 'true'
         run: |
@@ -123,7 +173,7 @@ jobs:
       - name: Bump version and changelog
         if: steps.gate.outputs.releasable == 'true'
         env:
-          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
         run: release-plz update --repo-url "https://github.com/${GITHUB_REPOSITORY}"
 
       - name: Commit the release
@@ -148,5 +198,5 @@ jobs:
       - name: Tag and push
         if: steps.gate.outputs.releasable == 'true' && steps.commit.outputs.committed == 'true'
         env:
-          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
         run: release-plz release --repo-url "https://github.com/${GITHUB_REPOSITORY}"

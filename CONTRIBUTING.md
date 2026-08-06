@@ -259,17 +259,37 @@ erased. Reviewing the PR before merge — the same review every PR already
 gets — is the only gate.
 
 Contributors do not need to do anything release-related beyond writing a
-conventional-commit-formatted PR title; see "Pull requests" above.
-`.github/workflows/release.yml` requires a `CARGO_REGISTRY_TOKEN` repository
-secret; without it, `verify` still runs but `publish` fails immediately with an
-explanatory message, so nothing is ever half-published.
-`.github/workflows/release-plz.yml` pushes directly to `main` and pushes tags,
-so this repository's branch ruleset on `main` needs to list the
-`github-actions` app as an actor exempt from the ruleset's
-required-status-checks rule — otherwise a brand new commit that was never
-itself pushed to a checked ref would fail that same requirement it's meant to
-satisfy. See the comments at the top of that workflow for details, including
-the self-trigger guard that stops it from reacting to its own commit.
+conventional-commit-formatted PR title; see "Pull requests" above. The
+following is maintainer-only setup, required once:
+
+- **`RELEASE_PLZ_TOKEN` (required, not optional).**
+  `.github/workflows/release-plz.yml` pushes the release commit and the
+  `vX.Y.Z` tag itself. GitHub Actions deliberately does not let a push made
+  with the default `GITHUB_TOKEN` trigger other workflows, so a tag pushed
+  with it would never start `release.yml` and nothing would ever publish —
+  silently, with no error. The workflow hard-fails if this fine-grained PAT
+  secret (`Contents: Read and write` on this repository only) is missing
+  rather than falling back to `GITHUB_TOKEN`. See the maintainer checklist in
+  the comments at the top of `release-plz.yml` for exact PAT creation steps.
+- **`CARGO_REGISTRY_TOKEN`.** Required by `.github/workflows/release.yml`;
+  without it `verify` still runs but `publish` fails immediately with an
+  explanatory message, so nothing is ever half-published.
+- **The repository ruleset on `main`** requires the CI checks (including
+  `conventional-title`) and blocks force-pushes and branch deletion. Without
+  a bypass, a brand new commit that was never itself pushed to a checked ref
+  — like release-plz's own release commit — would fail that same
+  required-status-checks rule the ruleset enforces on everyone else. The
+  obvious-looking bypass (exempting the `github-actions` app as an
+  `Integration` actor) does not work on a personal, non-org-owned repository
+  like this one — GitHub's Rulesets API rejects it ("Actor GitHub Actions
+  integration must be part of the ruleset source or owner organization").
+  Since a push authenticated with `RELEASE_PLZ_TOKEN` is attributed to that
+  PAT's *owning user account* rather than to the `github-actions` app, and
+  that account is this repository's admin, the bypass entry that actually
+  works is `actor_type: RepositoryRole`, `actor_id: 5` (Repository admin),
+  `bypass_mode: always`. See the comments at the top of `release-plz.yml` for
+  the exact `gh api` payload and the full self-trigger guard that stops this
+  workflow from reacting to its own commit.
 
 ## License
 
