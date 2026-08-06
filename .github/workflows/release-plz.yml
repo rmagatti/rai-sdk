@@ -134,6 +134,14 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install cargo-semver-checks
+        # release-plz consults cargo-semver-checks when present: API-breaking
+        # changes then force the correct (minor, pre-1.0) bump instead of a
+        # patch. Absent, the v0.1.2-instead-of-v0.2.0 mistake happens.
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-semver-checks
+
       - name: Install release-plz
         uses: taiki-e/install-action@v2
         with:
@@ -210,7 +218,14 @@ jobs:
           echo "committed=true" >> "$GITHUB_OUTPUT"
 
       - name: Tag and push
-        if: steps.gate.outputs.releasable == 'true' && steps.commit.outputs.committed == 'true'
+        # Not gated on `committed`: if a prior run bumped the version but died
+        # before tagging (or the version was corrected manually), the tag must
+        # still be cut. `release-plz release` is idempotent — an existing tag
+        # makes it a no-op, so re-runs are safe.
+        if: steps.gate.outputs.releasable == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
-        run: release-plz release --repo-url "https://github.com/${GITHUB_REPOSITORY}"
+        # `--git-token` is required even in tag-only mode (git_release_enable
+        # = false still leaves release-plz wanting forge auth configured) —
+        # the env var alone is not read for this.
+        run: release-plz release --repo-url "https://github.com/${GITHUB_REPOSITORY}" --git-token "${GITHUB_TOKEN}"
