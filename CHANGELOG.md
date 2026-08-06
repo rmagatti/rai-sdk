@@ -11,6 +11,13 @@ the public API. Breaking changes are always called out below.
 
 ## [Unreleased]
 
+## [0.1.2](https://github.com/rmagatti/rai-sdk/compare/v0.1.1...v0.1.2) - 2026-08-06
+
+### Added
+
+- first-class OpenAI-compatible provider (Ollama, vLLM, LM Studio) ([#7](https://github.com/rmagatti/rai-sdk/pull/7))
+- *(stream)* add serializable wire events for server-side proxying ([#5](https://github.com/rmagatti/rai-sdk/pull/5))
+
 Everything below is additive at the call site: no existing method, field, or
 behavior changed. Three public enums do gain variants — `Model`,
 `ProviderKind`, and `Error` — which breaks downstream `match` expressions that
