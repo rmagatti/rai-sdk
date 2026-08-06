@@ -21,16 +21,30 @@ name: Release-plz
 # commit re-triggering this same workflow forever, so this has three
 # independent layers:
 #   1. Actor guard (below): skip if the triggering push's actor is the
-#      github-actions bot itself.
+#      github-actions bot itself. Reasoned through: `github.actor` on the
+#      re-triggered run reflects whoever *authenticated* the push, not the
+#      `git config user.name` used for the commit. Since this workflow is
+#      required to push with the `RELEASE_PLZ_TOKEN` PAT (see "THE TOKEN
+#      TRAP" below), and that PAT is owned by a human account, not the
+#      `github-actions[bot]` account, this specific guard never actually
+#      matches for this repo's configuration — it's a no-op layer, kept only
+#      because it's the first thing GitHub's own docs suggest and it's
+#      technically what would fire if someone ever switched this back to
+#      the default `GITHUB_TOKEN` (in which case this guard alone would
+#      correctly stop the loop). Guards 2 and 3 are what actually carry this
+#      for the PAT configuration this repo uses.
 #   2. Message guard (below): skip if the triggering push's head commit
 #      message starts with `chore(release):` — this workflow's own commit
 #      message shape, chosen to also be skipped by release-plz.toml's
-#      changelog commit_parsers (`^chore` is skipped there).
+#      changelog commit_parsers (`^chore` is skipped there). This matches
+#      regardless of which account/token authenticated the push, so it holds
+#      for the PAT configuration.
 #   3. Structural guard (in the "releasable commits" step): even if 1 and 2
 #      somehow both failed to match, that step would still find zero
 #      releasable commits, because the tag this workflow pushes points at
-#      the exact commit that would be re-triggering the run. A wasted rerun
-#      is a fast no-op, not a loop, regardless of guards 1/2.
+#      the exact commit that would be re-triggering the run, so the range
+#      `last_tag..HEAD` it scans is empty. A wasted rerun is a fast no-op,
+#      not a loop, regardless of guards 1/2.
 # Deliberately not used: path-based filtering (e.g. a trigger-level
 # `paths-ignore` on Cargo.toml/Cargo.lock/CHANGELOG.md). A legitimate
 # dependency bump (`chore(deps)`, merged via Dependabot) also touches only
