@@ -1,13 +1,16 @@
-# Configuration for release-plz (https://release-plz.dev), which maintains a
-# rolling "Release PR" and, once that PR is merged, creates and pushes the
-# release tag. See .github/workflows/release-plz.yml for how this is wired up,
-# and CONTRIBUTING.md for the release flow from a contributor's perspective.
+# Configuration for release-plz (https://release-plz.dev), which runs
+# directly on every push to main: it bumps the version in Cargo.toml, updates
+# CHANGELOG.md from conventional commits since the last tag, commits that
+# directly to main, and then creates and pushes the release tag. There is no
+# Release PR. See .github/workflows/release-plz.yml for how this is wired up
+# (including the self-trigger guard), and CONTRIBUTING.md for the release flow
+# from a contributor's perspective.
 #
 # Division of responsibilities in this repo:
-# - release-plz (this file + the release-plz workflow) opens/updates a
-#   Release PR that bumps the version in Cargo.toml and updates
-#   CHANGELOG.md, inferring the version bump from conventional commits. Once
-#   that PR is merged, it creates and pushes the `vX.Y.Z` git tag.
+# - release-plz (this file + the release-plz workflow) computes the version
+#   bump and CHANGELOG.md entry from conventional commits, commits that bump
+#   directly to main as `chore(release): vX.Y.Z`, and creates and pushes the
+#   corresponding `vX.Y.Z` git tag.
 # - .github/workflows/release.yml, triggered by that tag, verifies the tree,
 #   runs the one and only `cargo publish` to crates.io, and creates the
 #   GitHub Release.
@@ -37,8 +40,10 @@ git_tag_name = "v{{ version }}"
 # CONTRIBUTING.md's "Commit conventions" section) onto the Keep a Changelog
 # headings already used in CHANGELOG.md (Added / Fixed / Documentation /
 # Changed). Commit kinds that are never user-facing are left out of the
-# generated section entirely. The maintainer can still hand-edit the Release
-# PR's CHANGELOG.md diff before merging, same as any other PR.
+# generated section entirely. Since there is no Release PR to hand-edit
+# before merging, getting these groupings right matters more here than it
+# would in a review-before-merge flow: what release-plz generates is what
+# ships, verbatim, in the same commit that bumps the version.
 commit_parsers = [
   { message = "^feat", group = "Added" },
   { message = "^fix", group = "Fixed" },

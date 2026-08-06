@@ -185,18 +185,25 @@ Keep commits focused, and write a body when the reasoning is not obvious from
 the diff. Mark breaking changes with a `!` after the type (`feat!:`) and explain
 the migration in the body.
 
+**Pull request titles matter beyond style here.** This repository merges pull
+requests by squash only, so your PR title becomes the single commit message on
+`main` — and that commit message is exactly what release-plz reads to decide
+whether to cut a release and how to categorize it in `CHANGELOG.md`. Give the
+PR the same conventional-commit-formatted title you'd give a single commit. CI
+enforces this (the `conventional-title` job in
+[`ci.yml`](.github/workflows/ci.yml)) and it is a required check.
+
 ## Pull requests
 
 1. Fork the repository and create a branch from `main`.
 2. Make your change, with tests for anything behavioral.
 3. Run `cargo fmt --all`, clippy, and the tests.
-4. Open the pull request against `main` and fill in the template.
+4. Open the pull request against `main`, with a conventional-commit-formatted
+   title (see above), and fill in the template.
 
 You do not need to touch `CHANGELOG.md` yourself: release-plz generates its
-entry from your commit message(s) when it opens or updates the Release PR
-(see "Releases" below). Writing a clear, conventional-commit-formatted
-summary is what makes that entry readable, so treat the commit message as the
-changelog entry.
+entry from your PR title/commit message when your PR is squash-merged (see
+"Releases" below).
 
 Guidelines:
 
@@ -206,41 +213,63 @@ Guidelines:
 - Note explicitly if the change is breaking, and describe the migration.
 - Expect review feedback; push follow-up commits rather than force-pushing over
   history that has already been reviewed, unless asked.
-- All CI jobs must be green before merge.
+- All required checks must be green before merge, enforced by this
+  repository's branch ruleset on `main` (which also disallows force pushes and
+  branch deletion) — see the maintainer setup checklist in this repository's
+  release-automation pull request if the ruleset isn't showing up yet under
+  Settings -> Rules.
+- Merging is by squash only; merge commits and rebase merges are disabled on
+  this repository so the PR title reliably becomes the commit release-plz
+  reads.
 
 ## Releases
 
-Releases are automated end to end except for one deliberate human checkpoint:
-a maintainer decides when to ship.
+Releases are automated end to end, with **no Release PR and no separate ship
+decision**: merging a PR to `main` is the release decision. This is a
+deliberate trade-off, chosen over a Release-PR flow, in exchange for shipping
+immediately instead of batching changes behind a second PR:
 
-1. Every push to `main` (i.e. every merged PR) runs
-   [`.github/workflows/release-plz.yml`](.github/workflows/release-plz.yml),
-   which uses [release-plz](https://release-plz.dev) to open or update a
-   standing "Release PR". That PR bumps the version in `Cargo.toml` and adds a
-   `CHANGELOG.md` entry generated from conventional commit messages since the
-   last release.
-2. A maintainer reviews the Release PR like any other PR — editing the
-   generated changelog wording, or the version bump, if needed — and merges it
-   when ready to ship. Merging is the release decision; nothing ships before
-   that merge.
-3. Merging the Release PR makes release-plz create and push the corresponding
-   `vX.Y.Z` tag. release-plz itself never runs `cargo publish` and never
-   creates the GitHub Release (see [`release-plz.toml`](release-plz.toml)).
+1. Merging a PR (squash-merges it, using the PR title as the commit message)
+   pushes that commit to `main`, which runs
+   [`.github/workflows/release-plz.yml`](.github/workflows/release-plz.yml).
+2. That workflow checks whether any commit since the last tag is a `feat`,
+   `fix`, `perf`, `refactor`, `revert`, or breaking (`!`/`BREAKING CHANGE`)
+   commit. If not — e.g. a `docs`, `chore`, `ci`, `test`, `style`, or `build`
+   only change — it stops here. Nothing is released.
+3. Otherwise it runs `release-plz update`, which bumps the version in
+   `Cargo.toml` and adds a `CHANGELOG.md` entry generated from conventional
+   commit messages since the last release, then commits that directly to
+   `main` as `chore(release): vX.Y.Z`, and creates and pushes the
+   corresponding `vX.Y.Z` tag. release-plz itself never runs `cargo publish`
+   and never creates the GitHub Release (see
+   [`release-plz.toml`](release-plz.toml)).
 4. That tag triggers
    [`.github/workflows/release.yml`](.github/workflows/release.yml), which
    re-verifies the tree (fmt, clippy, tests, the tag-matches-`Cargo.toml`
    check), runs the one and only `cargo publish` to crates.io, and creates the
    GitHub Release.
 
+**The accepted trade-off:** every `feat`/`fix`/`perf`/`refactor`/`revert` (or
+breaking) merge to `main` publishes to crates.io immediately — there is no
+window to batch several merges into one release, and no maintainer review step
+between "PR merged" and "published." crates.io has no unpublish, only
+[yank](https://doc.rust-lang.org/cargo/reference/publishing.html#cargo-yank);
+a bad release is fixed forward (a follow-up patch release) or yanked, never
+erased. Reviewing the PR before merge — the same review every PR already
+gets — is the only gate.
+
 Contributors do not need to do anything release-related beyond writing a
-clear commit message; see "Pull requests" above. `.github/workflows/release.yml`
-requires a `CARGO_REGISTRY_TOKEN` repository secret; without it, `verify` still
-runs but `publish` fails immediately with an explanatory message, so nothing is
-ever half-published. `.github/workflows/release-plz.yml` requires either the
-"Allow GitHub Actions to create and approve pull requests" repository setting
-(Settings -> Actions -> General -> Workflow permissions) or a `RELEASE_PLZ_TOKEN`
-PAT secret, so it can open the Release PR; see the comments at the top of that
-workflow for details.
+conventional-commit-formatted PR title; see "Pull requests" above.
+`.github/workflows/release.yml` requires a `CARGO_REGISTRY_TOKEN` repository
+secret; without it, `verify` still runs but `publish` fails immediately with an
+explanatory message, so nothing is ever half-published.
+`.github/workflows/release-plz.yml` pushes directly to `main` and pushes tags,
+so this repository's branch ruleset on `main` needs to list the
+`github-actions` app as an actor exempt from the ruleset's
+required-status-checks rule — otherwise a brand new commit that was never
+itself pushed to a checked ref would fail that same requirement it's meant to
+satisfy. See the comments at the top of that workflow for details, including
+the self-trigger guard that stops it from reacting to its own commit.
 
 ## License
 

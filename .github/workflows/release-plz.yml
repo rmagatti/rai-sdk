@@ -1,26 +1,54 @@
 name: Release-plz
 
-# release-plz maintains a rolling Release PR (`release-pr` job) and, once
-# that PR is merged to main, creates and pushes the `vX.Y.Z` tag (`release`
-# job). It never runs `cargo publish` or creates the GitHub Release itself —
-# see release-plz.toml for why. .github/workflows/release.yml, triggered by
-# the tag this workflow pushes, remains the single place a crates.io publish
-# or a GitHub Release happens.
+# release-plz runs directly on every push to main: it bumps Cargo.toml and
+# CHANGELOG.md from conventional commits since the last release tag, commits
+# that directly to main as a bot commit, and pushes the resulting `vX.Y.Z`
+# tag. There is no Release PR — merging to main *is* the release decision.
 #
-# Flow: merge a feature PR -> this workflow updates (or opens) the Release PR
-# with a version bump inferred from conventional commits and a CHANGELOG.md
-# update -> a maintainer reviews and merges the Release PR when ready to ship
-# -> this workflow pushes the `vX.Y.Z` tag -> release.yml verifies, publishes
-# to crates.io, and creates the GitHub Release.
+# release-plz never runs `cargo publish` and never creates the GitHub Release
+# itself (see release-plz.toml: `publish = false`, `git_release_enable =
+# false`). The tag this workflow pushes triggers the existing
+# .github/workflows/release.yml, which remains the single place a crates.io
+# publish or a GitHub Release happens.
+#
+# Accepted trade-off (see CONTRIBUTING.md's "Releases" section): every
+# feat/fix/perf/refactor/revert (or breaking) merge to main publishes to
+# crates.io immediately, with no batching window and no review step in
+# between. crates.io has no unpublish, only yank, so a bad release is fixed
+# forward or yanked, never erased.
+#
+# Self-trigger guard. This pattern's classic failure mode is the bot's own
+# commit re-triggering this same workflow forever, so this has three
+# independent layers:
+#   1. Actor guard (below): skip if the triggering push's actor is the
+#      github-actions bot itself.
+#   2. Message guard (below): skip if the triggering push's head commit
+#      message starts with `chore(release):` — this workflow's own commit
+#      message shape, chosen to also be skipped by release-plz.toml's
+#      changelog commit_parsers (`^chore` is skipped there).
+#   3. Structural guard (in the "releasable commits" step): even if 1 and 2
+#      somehow both failed to match, that step would still find zero
+#      releasable commits, because the tag this workflow pushes points at
+#      the exact commit that would be re-triggering the run. A wasted rerun
+#      is a fast no-op, not a loop, regardless of guards 1/2.
+# Deliberately not used: path-based filtering (e.g. a trigger-level
+# `paths-ignore` on Cargo.toml/Cargo.lock/CHANGELOG.md). A legitimate
+# dependency bump (`chore(deps)`, merged via Dependabot) also touches only
+# Cargo.toml/Cargo.lock, and must still reach the "releasable commits" gate
+# below rather than being silently discarded by path alone.
 #
 # Maintainer checklist for this to work:
-#  1. Settings -> Actions -> General -> "Workflow permissions": enable "Allow
-#     GitHub Actions to create and approve pull requests". Without it, the
-#     release-pr job below cannot open the Release PR using GITHUB_TOKEN.
-#  2. (Optional, if you'd rather not grant that repo-wide setting) Add a
-#     `RELEASE_PLZ_TOKEN` repository secret holding a PAT (fine-grained,
-#     "Pull requests: write" and "Contents: write" on this repo). It is used
-#     automatically in place of GITHUB_TOKEN when present.
+#  1. This repository's ruleset on `main` lists the `github-actions` app
+#     (Integration id 15368) as an actor that is exempt from the ruleset's
+#     required-status-checks rule, so this workflow's own commit and tag are
+#     accepted the same way any already-reviewed, already-checked change
+#     would be. A brand new commit that was never itself pushed to a checked
+#     ref would otherwise fail that requirement on its own. No further
+#     setting is needed for the default GITHUB_TOKEN path.
+#  2. (Optional) A `RELEASE_PLZ_TOKEN` PAT secret can be used instead of
+#     GITHUB_TOKEN. If you add one, its owning account also needs to be
+#     covered by the branch ruleset's exemption, since that account — not
+#     the `github-actions` app — would be the one pushing.
 #
 # CARGO_REGISTRY_TOKEN is not needed here: `publish = false` in
 # release-plz.toml means this workflow never calls `cargo publish`. That
@@ -33,51 +61,92 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: release-plz-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  release-pr:
-    name: Release-plz PR
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: write
-    concurrency:
-      group: release-plz-pr-${{ github.ref }}
-      cancel-in-progress: false
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Run release-plz release-pr
-        uses: release-plz/action@v0.5
-        with:
-          command: release-pr
-        env:
-          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
-
   release:
-    name: Release-plz tag
+    name: Release-plz
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    if: >-
+      github.actor != 'github-actions[bot]' &&
+      !startsWith(github.event.head_commit.message, 'chore(release):')
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
-          persist-credentials: false
+          fetch-tags: true
+          token: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Run release-plz release
-        uses: release-plz/action@v0.5
+      - name: Install release-plz
+        uses: taiki-e/install-action@v2
         with:
-          command: release
+          tool: release-plz
+
+      - name: Check for releasable commits since the last tag
+        id: gate
+        run: |
+          last_tag="$(git tag --list 'v*' --sort=-v:refname | head -n 1)"
+          if [ -n "$last_tag" ]; then
+            range="${last_tag}..HEAD"
+          else
+            range="HEAD"
+          fi
+          echo "Commits in range ${range}:"
+          git log --format='%s' "$range" | tee /tmp/commits-since-last-tag.txt
+
+          # A commit is releasable if its conventional-commit type changes
+          # published behavior (feat/fix/perf/refactor/revert), or it's
+          # marked breaking (`!` after the type, or a `BREAKING CHANGE:`
+          # trailer). docs/style/test/build/ci/chore-only history must not
+          # trigger a release, matching release-plz.toml's commit_parsers.
+          if grep -Eiq '^(feat|fix|perf|refactor|revert)(\([a-z0-9./-]+\))?!?:|BREAKING CHANGE' /tmp/commits-since-last-tag.txt; then
+            echo "releasable=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No releasable commits since ${last_tag:-the beginning of history}; nothing to do."
+            echo "releasable=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Configure git identity for the release bot
+        if: steps.gate.outputs.releasable == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Bump version and changelog
+        if: steps.gate.outputs.releasable == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
+        run: release-plz update --repo-url "https://github.com/${GITHUB_REPOSITORY}"
+
+      - name: Commit the release
+        if: steps.gate.outputs.releasable == 'true'
+        id: commit
+        run: |
+          if git diff --quiet -- Cargo.toml Cargo.lock CHANGELOG.md; then
+            echo "release-plz update produced no changes; nothing to commit."
+            echo "committed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          version="$(sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' Cargo.toml | head -n 1)"
+          if [ -z "$version" ]; then
+            echo "::error file=Cargo.toml::could not read version from Cargo.toml"
+            exit 1
+          fi
+          git add Cargo.toml Cargo.lock CHANGELOG.md
+          git commit -m "chore(release): v${version}"
+          git push origin HEAD:refs/heads/main
+          echo "committed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Tag and push
+        if: steps.gate.outputs.releasable == 'true' && steps.commit.outputs.committed == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
+        run: release-plz release --repo-url "https://github.com/${GITHUB_REPOSITORY}"
