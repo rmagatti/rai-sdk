@@ -88,10 +88,22 @@ axum = "0.8"
 name = "sse_proxy"
 required-features = ["openai"]
 
+# Talks to an OpenAI-compatible endpoint, which the `openai` feature gates.
+[[example]]
+name = "local_model"
+required-features = ["openai"]
+
 [features]
 default = ["openai", "anthropic", "openrouter", "rustls-tls"]
 
 # Providers.
+#
+# `openai` also gates the OpenAI-compatible provider (Ollama, vLLM, LM Studio,
+# and anything else serving `POST {base_url}/chat/completions`). That is not a
+# separate feature because it is not a separate wire format: it reuses the
+# `openai` module's request builder and SSE parser, so a dedicated feature could
+# only ever imply `openai` — a knob with one position — while splitting the
+# provider matrix CI already covers.
 openai = []
 anthropic = []
 openrouter = []

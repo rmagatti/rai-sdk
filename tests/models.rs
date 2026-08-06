@@ -392,3 +392,64 @@ fn anthropic_and_openai_model_ids_are_not_vendor_prefixed() {
         );
     }
 }
+
+// ── OpenAI-compatible endpoints ────────────────────────────────────────────
+
+#[test]
+fn openai_compatible_model_ids_are_free_form() {
+    // Identifiers a local runtime hands out: tags, slashes, filesystem paths.
+    // None of these belong to a catalog, and none may be rewritten.
+    let ids = [
+        "llama3.1:8b",
+        "qwen2.5-coder:14b-instruct-q4_K_M",
+        "Qwen/Qwen2.5-7B-Instruct",
+        "/models/Mistral-7B-Instruct-v0.3",
+    ];
+
+    for id in ids {
+        let model = Model::openai_compatible(id);
+        assert_eq!(model.as_str(), id);
+        assert_eq!(model.provider(), ProviderKind::OpenAICompatible);
+    }
+}
+
+#[test]
+fn openai_compatible_provider_kind_serializes_and_names_its_feature() {
+    assert_eq!(
+        ProviderKind::OpenAICompatible.to_string(),
+        "openai-compatible"
+    );
+    assert_eq!(
+        serde_json::to_value(ProviderKind::OpenAICompatible).expect("serialize provider"),
+        serde_json::json!("openai-compatible")
+    );
+    assert_eq!(
+        serde_json::from_value::<ProviderKind>(serde_json::json!("openai-compatible"))
+            .expect("deserialize provider"),
+        ProviderKind::OpenAICompatible
+    );
+
+    // The provider rides the `openai` feature, so the "enable this feature"
+    // hint must not name a feature that does not exist.
+    assert_eq!(ProviderKind::OpenAICompatible.feature_name(), "openai");
+    let message = rai_sdk::Error::ProviderNotEnabled(ProviderKind::OpenAICompatible).to_string();
+    assert!(
+        message.contains("'openai' feature"),
+        "the hint should name a real feature: {message}"
+    );
+}
+
+#[test]
+fn openai_compatible_models_round_trip_through_serde() {
+    let model = Model::openai_compatible("llama3.1:8b");
+    let json = serde_json::to_value(&model).expect("serialize model");
+
+    assert_eq!(
+        json,
+        serde_json::json!({ "provider": "OpenAICompatible", "model": "llama3.1:8b" })
+    );
+
+    let restored: Model = serde_json::from_value(json).expect("deserialize model");
+    assert_eq!(restored.as_str(), "llama3.1:8b");
+    assert_eq!(restored.provider(), ProviderKind::OpenAICompatible);
+}

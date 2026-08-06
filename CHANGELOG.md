@@ -11,10 +11,53 @@ the public API. Breaking changes are always called out below.
 
 ## [Unreleased]
 
-Everything below is additive; nothing in the existing public API changed shape.
+Everything below is additive at the call site: no existing method, field, or
+behavior changed. Three public enums do gain variants — `Model`,
+`ProviderKind`, and `Error` — which breaks downstream `match` expressions that
+were exhaustive over them.
 
 ### Added
 
+- **First-class support for OpenAI-compatible endpoints.** Local and
+  self-hosted models — Ollama, vLLM, LM Studio, llama.cpp's server, inference
+  gateways — are now a provider of their own rather than a base-URL override on
+  the OpenAI one.
+  - `ClientBuilder::openai_compatible_base_url()` names the endpoint, with
+    `ClientBuilder::ollama()` as shorthand for `http://localhost:11434/v1`.
+    `ProviderKind::OpenAICompatible` and
+    `Model::openai_compatible("llama3.1:8b")` route to it, and model
+    identifiers are free-form because these endpoints publish no catalog.
+  - **The endpoint is per client, deliberately not per process.** There is no
+    `*_BASE_URL` variable for it: a process routinely talks to several
+    compatible endpoints at once, each with its own credentials and
+    capabilities, so several clients coexist without interfering.
+    `OPENAI_BASE_URL` is unchanged and still redirects only the real OpenAI
+    provider.
+  - **No API key is required.** With none configured, requests carry no
+    `Authorization` header at all rather than a placeholder token;
+    `ClientBuilder::openai_compatible_key()` adds a bearer token for gateways
+    that want one.
+  - **Capability gaps are typed.** "OpenAI-compatible" describes a wire format,
+    not a feature set, so a request needing tool calling or structured output
+    from an endpoint that lacks it fails with the new
+    `Error::CapabilityUnsupported` — distinct from the generic HTTP and request
+    errors — carrying a `Capability` a caller can match on through
+    `Error::unsupported_capability()`. It is raised either from
+    `EndpointCapabilities` declared on the client, before any HTTP call is
+    made, or by classifying the endpoint's own rejection. Classification only
+    applies when the request actually used the capability, so an unrelated bad
+    request stays an ordinary `Error::InvalidRequest`. Capabilities are
+    declared, never probed.
+  - Chat, streaming, tool calling, and structured output reuse the OpenAI
+    provider's request builder and SSE parser rather than forking them.
+    Divergences are parameterized instead: structured output is requested
+    without OpenAI's `strict` flag, which third-party endpoints implement
+    unevenly and which the SDK's client-side schema validation makes redundant.
+  - The provider rides the existing `openai` feature, since it is the same wire
+    format and shares that module's code. A build that talks only to local
+    models enables `openai` and nothing else.
+  - `examples/local_model.rs` runs chat, streaming, and a capability fallback
+    against a local endpoint with no credentials.
 - **Serializable stream events for server-side proxying.** A new `wire` module
   lets a server that holds the provider credentials re-emit a generation to its
   own clients — over SSE or a WebSocket — without losing stream semantics.
@@ -44,6 +87,16 @@ Everything below is additive; nothing in the existing public API changed shape.
   `ImageSource`, `FileSource`, `ToolCall`, `ToolDefinition`,
   `ConversationTurn`, `StreamEvent`, `Prompt`, `Usage`, `Response`,
   `StreamChunk`), so callers can compare and assert on them directly.
+
+### Fixed
+
+- The Chat Completions stream parser now accepts `data:` with no space after
+  the colon, which the server-sent events specification allows and self-hosted
+  servers emit. Previously such frames were silently dropped. Affects the
+  OpenAI and OpenAI-compatible providers.
+- `Error::ProviderNotEnabled` names the Cargo feature that actually enables the
+  provider rather than assuming it matches the provider's name, via the new
+  `ProviderKind::feature_name()`.
 
 ### Documentation
 

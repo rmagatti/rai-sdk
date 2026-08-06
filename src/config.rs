@@ -18,6 +18,10 @@
 //! * `AI_MAX_RETRIES`, `AI_RETRY_INITIAL_DELAY_MS`, `AI_RETRY_MAX_DELAY_MS`,
 //!   `AI_RETRY_BACKOFF_MULTIPLIER`, `AI_RETRY_JITTER`
 //!
+//! The OpenAI-compatible endpoint settings are the one exception: they have no
+//! environment variables and are always per client. See
+//! [`Config::openai_compatible_base_url`].
+//!
 //! # Examples
 //!
 //! ```no_run
@@ -38,6 +42,85 @@ use serde::{Deserialize, Serialize};
 #[cfg(any(feature = "openai", feature = "anthropic", feature = "openrouter"))]
 use crate::error;
 use crate::retry::RetryConfig;
+
+/// The base URL Ollama serves its OpenAI-compatible API on by default.
+///
+/// Used by [`Config::with_ollama`] and
+/// [`ClientBuilder::ollama`](crate::ClientBuilder::ollama).
+pub const OLLAMA_BASE_URL: &str = "http://localhost:11434/v1";
+
+/// What an OpenAI-compatible endpoint supports beyond plain chat completions.
+///
+/// Endpoints that speak OpenAI's wire format vary in what they implement: a
+/// 3B model behind Ollama may have no tool support at all, and a runtime may
+/// accept `response_format` and then ignore it. This type is how a caller
+/// states what its endpoint can do. Nothing is probed — auto-detection would
+/// mean an extra round trip on every client build and still be wrong for the
+/// per-model cases.
+///
+/// The default assumes full compatibility, so a capable endpoint needs no
+/// configuration. Turn a capability off to convert what would be an opaque
+/// HTTP 400 partway through into an immediate, typed
+/// [`Error::CapabilityUnsupported`](crate::Error::CapabilityUnsupported).
+///
+/// # Examples
+///
+/// ```
+/// use rai_sdk::EndpointCapabilities;
+///
+/// // A small local model that cannot call tools but does honor JSON schemas.
+/// let capabilities = EndpointCapabilities::default().with_tool_calling(false);
+///
+/// assert!(!capabilities.tool_calling);
+/// assert!(capabilities.structured_output);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EndpointCapabilities {
+    /// Whether the endpoint accepts `tools` and can return tool calls.
+    pub tool_calling: bool,
+
+    /// Whether the endpoint honors `response_format` — JSON mode or a JSON
+    /// Schema.
+    pub structured_output: bool,
+}
+
+impl Default for EndpointCapabilities {
+    /// Assume the endpoint implements everything, which is what "OpenAI
+    /// compatible" claims.
+    fn default() -> Self {
+        Self::all()
+    }
+}
+
+impl EndpointCapabilities {
+    /// Every capability is supported.
+    pub fn all() -> Self {
+        Self {
+            tool_calling: true,
+            structured_output: true,
+        }
+    }
+
+    /// Chat completions only: no tool calling, no structured output.
+    pub fn text_only() -> Self {
+        Self {
+            tool_calling: false,
+            structured_output: false,
+        }
+    }
+
+    /// Declare whether the endpoint supports tool calling.
+    pub fn with_tool_calling(mut self, supported: bool) -> Self {
+        self.tool_calling = supported;
+        self
+    }
+
+    /// Declare whether the endpoint supports structured output.
+    pub fn with_structured_output(mut self, supported: bool) -> Self {
+        self.structured_output = supported;
+        self
+    }
+}
 
 /// Configuration for the AI SDK client.
 ///
@@ -70,6 +153,33 @@ pub struct Config {
     /// OpenRouter API base URL.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub openrouter_base_url: Option<String>,
+
+    /// Base URL of an OpenAI-compatible endpoint, such as
+    /// `http://localhost:11434/v1`.
+    ///
+    /// Setting this is what makes [`ProviderKind::OpenAICompatible`] available
+    /// on a client; there is no default endpoint and no environment variable,
+    /// because a process routinely talks to several at once. See
+    /// [`Config::openai_compatible_base_url`].
+    ///
+    /// [`ProviderKind::OpenAICompatible`]: crate::ProviderKind::OpenAICompatible
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub openai_compatible_base_url: Option<String>,
+
+    /// Bearer token for the OpenAI-compatible endpoint.
+    ///
+    /// Optional: endpoints that need no credential — the common case for a
+    /// local runtime — simply leave this unset, and no `Authorization` header
+    /// is sent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub openai_compatible_api_key: Option<String>,
+
+    /// What the OpenAI-compatible endpoint supports beyond plain chat.
+    ///
+    /// Declared by the caller, never probed. Defaults to
+    /// [`EndpointCapabilities::default`], which assumes full compatibility.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub openai_compatible_capabilities: Option<EndpointCapabilities>,
 
     /// Optional app URL for OpenRouter attribution headers.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -241,6 +351,41 @@ impl Config {
         self
     }
 
+    /// Point this client at an OpenAI-compatible endpoint.
+    ///
+    /// The URL is the API root that serves `POST /chat/completions`, so it
+    /// usually ends in `/v1`.
+    pub fn with_openai_compatible_base_url(mut self, url: impl Into<String>) -> Self {
+        self.openai_compatible_base_url = Some(url.into());
+        self
+    }
+
+    /// Set the bearer token for the OpenAI-compatible endpoint.
+    ///
+    /// Leave it unset for endpoints that need no credential; no
+    /// `Authorization` header is sent then.
+    pub fn with_openai_compatible_key(mut self, key: impl Into<String>) -> Self {
+        self.openai_compatible_api_key = Some(key.into());
+        self
+    }
+
+    /// Declare what the OpenAI-compatible endpoint supports.
+    pub fn with_openai_compatible_capabilities(
+        mut self,
+        capabilities: EndpointCapabilities,
+    ) -> Self {
+        self.openai_compatible_capabilities = Some(capabilities);
+        self
+    }
+
+    /// Point this client at a local Ollama server ([`OLLAMA_BASE_URL`]).
+    ///
+    /// Shorthand for [`Config::with_openai_compatible_base_url`] with Ollama's
+    /// default address; pass the URL explicitly for any other host or port.
+    pub fn with_ollama(self) -> Self {
+        self.with_openai_compatible_base_url(OLLAMA_BASE_URL)
+    }
+
     /// Set the OpenRouter `HTTP-Referer` attribution header.
     pub fn with_openrouter_http_referer(mut self, referer: impl Into<String>) -> Self {
         self.openrouter_http_referer = Some(referer.into());
@@ -325,6 +470,37 @@ impl Config {
         self.openrouter_base_url
             .clone()
             .or_else(|| std::env::var("OPENROUTER_BASE_URL").ok())
+    }
+
+    /// The OpenAI-compatible endpoint's base URL, or `None` when this client
+    /// has none configured.
+    ///
+    /// Unlike every other getter here this one has **no environment-variable
+    /// fallback**, and that is deliberate. The other providers each name one
+    /// well-known service, so a process-wide `*_BASE_URL` is a sensible
+    /// override. "OpenAI-compatible" names no service at all: a single process
+    /// may talk to a local Ollama, a shared vLLM deployment, and a staging
+    /// gateway at the same time, each with its own credentials and
+    /// capabilities. That is per-client configuration, so it is set per client.
+    ///
+    /// `OPENAI_BASE_URL` keeps its existing meaning and still applies only to
+    /// the real OpenAI provider.
+    pub fn openai_compatible_base_url(&self) -> Option<String> {
+        self.openai_compatible_base_url.clone()
+    }
+
+    /// The OpenAI-compatible endpoint's bearer token, if one was set.
+    ///
+    /// No environment-variable fallback, for the reasons given on
+    /// [`Config::openai_compatible_base_url`].
+    pub fn openai_compatible_key(&self) -> Option<String> {
+        self.openai_compatible_api_key.clone()
+    }
+
+    /// What the OpenAI-compatible endpoint was declared to support, defaulting
+    /// to [`EndpointCapabilities::default`].
+    pub fn openai_compatible_capabilities(&self) -> EndpointCapabilities {
+        self.openai_compatible_capabilities.unwrap_or_default()
     }
 
     /// The OpenRouter `HTTP-Referer` value.

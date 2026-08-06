@@ -39,6 +39,29 @@ pub enum ProviderKind {
     Anthropic,
     /// OpenRouter's aggregating API (`https://openrouter.ai`).
     OpenRouter,
+    /// A self-hosted or third-party endpoint that speaks the OpenAI Chat
+    /// Completions wire format, such as Ollama, vLLM, or LM Studio.
+    ///
+    /// Unlike the other variants this one names no fixed service: the endpoint
+    /// is chosen per client with
+    /// [`ClientBuilder::openai_compatible_base_url`](crate::ClientBuilder::openai_compatible_base_url).
+    #[serde(rename = "openai-compatible")]
+    OpenAICompatible,
+}
+
+impl ProviderKind {
+    /// The Cargo feature that compiles support for this provider in.
+    ///
+    /// [`ProviderKind::OpenAICompatible`] rides the `openai` feature, because it
+    /// reuses that provider's request builder and stream parser, so this is not
+    /// simply the lowercased variant name.
+    pub fn feature_name(&self) -> &'static str {
+        match self {
+            ProviderKind::OpenAI | ProviderKind::OpenAICompatible => "openai",
+            ProviderKind::Anthropic => "anthropic",
+            ProviderKind::OpenRouter => "openrouter",
+        }
+    }
 }
 
 impl std::fmt::Display for ProviderKind {
@@ -47,6 +70,48 @@ impl std::fmt::Display for ProviderKind {
             ProviderKind::OpenAI => write!(f, "openai"),
             ProviderKind::Anthropic => write!(f, "anthropic"),
             ProviderKind::OpenRouter => write!(f, "openrouter"),
+            ProviderKind::OpenAICompatible => write!(f, "openai-compatible"),
+        }
+    }
+}
+
+/// An optional part of the Chat Completions API that an endpoint may not
+/// implement.
+///
+/// OpenAI-compatible servers implement the same wire format as OpenAI but not
+/// always the same feature set: a small local model may have no tool-calling
+/// support, and a runtime may not constrain output to a JSON Schema. Requests
+/// that need something the endpoint cannot do fail with
+/// [`Error::CapabilityUnsupported`] naming the capability, so a caller can fall
+/// back instead of parsing an HTTP error body.
+///
+/// Declare what an endpoint supports with
+/// [`EndpointCapabilities`](crate::EndpointCapabilities).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Capability {
+    /// Advertising tools and receiving tool calls back.
+    ToolCalling,
+    /// Constraining the response with `response_format` — JSON mode or a JSON
+    /// Schema.
+    StructuredOutput,
+}
+
+impl Capability {
+    /// The snake_case name this capability serializes as.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Capability::ToolCalling => "tool_calling",
+            Capability::StructuredOutput => "structured_output",
+        }
+    }
+}
+
+impl std::fmt::Display for Capability {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Capability::ToolCalling => write!(f, "tool calling"),
+            Capability::StructuredOutput => write!(f, "structured output"),
         }
     }
 }
@@ -140,8 +205,37 @@ pub enum Error {
     ProviderNotConfigured(ProviderKind),
 
     /// Provider feature not enabled.
-    #[error("provider {0} feature is not enabled — enable the '{0}' feature in Cargo.toml")]
+    #[error(
+        "provider {0} feature is not enabled — enable the '{feature}' feature in Cargo.toml",
+        feature = .0.feature_name()
+    )]
     ProviderNotEnabled(ProviderKind),
+
+    /// The endpoint does not implement a part of the API the request needed.
+    ///
+    /// Raised for OpenAI-compatible endpoints, which share OpenAI's wire format
+    /// without necessarily sharing its feature set. It is deliberately distinct
+    /// from [`Error::Request`] and [`Error::InvalidRequest`] so a caller can
+    /// degrade gracefully — retry without tools, or parse free-form text
+    /// instead of asking for a schema — rather than pattern-matching an HTTP
+    /// error body.
+    ///
+    /// Produced either up front, when
+    /// [`EndpointCapabilities`](crate::EndpointCapabilities) says the endpoint
+    /// lacks the capability, or from the endpoint's own rejection of a request
+    /// that used it.
+    #[error("{capability} is not supported by the {provider} endpoint at {base_url}: {message}")]
+    CapabilityUnsupported {
+        /// Provider that could not serve the request.
+        provider: ProviderKind,
+        /// Capability the request needed.
+        capability: Capability,
+        /// Base URL of the endpoint that could not serve it.
+        base_url: String,
+        /// Why the capability is unavailable: the endpoint's own message, or a
+        /// note that it was declared unsupported.
+        message: String,
+    },
 
     /// Content was filtered/blocked by the provider.
     #[error("content filtered by {provider}: {reason}")]
@@ -247,6 +341,33 @@ impl Error {
         matches!(self, Error::RateLimit { .. })
     }
 
+    /// The capability an endpoint could not provide, if this is a
+    /// [`Error::CapabilityUnsupported`].
+    ///
+    /// This is the hook for falling back to a simpler request shape.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rai_sdk::{Capability, Error, ProviderKind};
+    ///
+    /// let error = Error::CapabilityUnsupported {
+    ///     provider: ProviderKind::OpenAICompatible,
+    ///     capability: Capability::ToolCalling,
+    ///     base_url: "http://localhost:11434/v1".to_string(),
+    ///     message: "the model does not support tools".to_string(),
+    /// };
+    ///
+    /// assert_eq!(error.unsupported_capability(), Some(Capability::ToolCalling));
+    /// assert!(!error.is_retryable());
+    /// ```
+    pub fn unsupported_capability(&self) -> Option<Capability> {
+        match self {
+            Error::CapabilityUnsupported { capability, .. } => Some(*capability),
+            _ => None,
+        }
+    }
+
     /// Short error category string for use as a metrics or logging label.
     pub fn kind_str(&self) -> &'static str {
         match self {
@@ -257,6 +378,7 @@ impl Error {
             Error::ModelNotAvailable { .. } => "model_not_available",
             Error::ProviderNotConfigured(_) => "provider_not_configured",
             Error::ProviderNotEnabled(_) => "provider_not_enabled",
+            Error::CapabilityUnsupported { .. } => "capability_unsupported",
             Error::ContentFiltered { .. } => "content_filtered",
             Error::Config(_) => "config",
             Error::Serialization(_) => "serialization",
@@ -280,6 +402,7 @@ impl Error {
             | Error::ModelNotAvailable { provider, .. }
             | Error::ProviderNotConfigured(provider)
             | Error::ProviderNotEnabled(provider)
+            | Error::CapabilityUnsupported { provider, .. }
             | Error::ContentFiltered { provider, .. }
             | Error::Timeout { provider }
             | Error::ToolProviderUnsupported { provider }

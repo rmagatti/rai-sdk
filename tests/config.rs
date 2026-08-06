@@ -624,3 +624,60 @@ fn client_builder_no_retry_overrides_retry_variables_from_the_environment() {
     // ...but requests use the builder default, which `no_retry()` zeroed. That
     // is asserted end-to-end against a mock server in `tests/retry.rs`.
 }
+
+// ── The OpenAI-compatible endpoint is per client, never from the env ───────
+
+#[test]
+fn openai_compatible_settings_are_never_read_from_the_environment() {
+    if !common::in_env_child() {
+        common::run_in_clean_env(
+            "openai_compatible_settings_are_never_read_from_the_environment",
+            &[
+                ("OPENAI_API_KEY", "sk-from-env"),
+                ("OPENAI_BASE_URL", "https://proxy.example.com/v1"),
+            ],
+        );
+        return;
+    }
+
+    let config = Config::from_env();
+
+    // `OPENAI_BASE_URL` keeps its existing meaning: it redirects the real
+    // OpenAI provider and nothing else.
+    assert_eq!(
+        config.openai_base_url.as_deref(),
+        Some("https://proxy.example.com/v1")
+    );
+
+    // A process-wide variable cannot conjure a compatible endpoint, because a
+    // process may need several with different credentials and capabilities.
+    assert_eq!(config.openai_compatible_base_url(), None);
+    assert_eq!(config.openai_compatible_key(), None);
+
+    // Setting one explicitly leaves the OpenAI provider's own base URL alone.
+    let config = config.with_ollama();
+    assert_eq!(
+        config.openai_compatible_base_url().as_deref(),
+        Some(rai_sdk::config::OLLAMA_BASE_URL)
+    );
+    assert_eq!(
+        config.openai_base_url.as_deref(),
+        Some("https://proxy.example.com/v1")
+    );
+}
+
+#[test]
+fn openai_compatible_capabilities_default_to_full_compatibility() {
+    let config = Config::new();
+    assert_eq!(
+        config.openai_compatible_capabilities(),
+        rai_sdk::EndpointCapabilities::all()
+    );
+
+    let config = config.with_openai_compatible_capabilities(
+        rai_sdk::EndpointCapabilities::text_only().with_structured_output(true),
+    );
+    let capabilities = config.openai_compatible_capabilities();
+    assert!(!capabilities.tool_calling);
+    assert!(capabilities.structured_output);
+}

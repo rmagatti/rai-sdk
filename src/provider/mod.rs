@@ -6,12 +6,21 @@
 //! matching Cargo feature (`openai`, `anthropic`, `openrouter`), all of which
 //! are enabled by default.
 //!
+//! `openai_compatible` is the exception to one module per service: it targets
+//! the OpenAI Chat Completions *format* as implemented by self-hosted and
+//! third-party servers, so the endpoint is named per client. It shares the
+//! `openai` feature because it also shares that module's request builder and
+//! stream parser.
+//!
 //! Most code should go through [`Client`](crate::Client) instead of using these
 //! types directly; they are public so that advanced callers can drive a single
 //! provider, and because streaming surfaces [`ProviderStreamEvent`].
 
 #[cfg(feature = "openai")]
 pub mod openai;
+
+#[cfg(feature = "openai")]
+pub mod openai_compatible;
 
 #[cfg(feature = "anthropic")]
 pub mod anthropic;
@@ -21,6 +30,9 @@ pub mod openrouter;
 
 #[cfg(feature = "openai")]
 pub use openai::OpenAIProvider;
+
+#[cfg(feature = "openai")]
+pub use openai_compatible::OpenAICompatibleProvider;
 
 #[cfg(feature = "anthropic")]
 pub use anthropic::AnthropicProvider;
