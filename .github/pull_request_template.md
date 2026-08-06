@@ -33,7 +33,7 @@ Closes #
 - [ ] New or changed public items have rustdoc comments (`missing_docs` is enforced).
 - [ ] `cargo doc --no-deps --all-features` passes with `RUSTDOCFLAGS="-D warnings"`.
 - [ ] Feature-gated code still builds with `--no-default-features` and with each provider feature alone.
-- [ ] `CHANGELOG.md` has an entry under `## [Unreleased]`, or this change needs none (e.g. CI-only).
+- [ ] Commit message(s) are clear and conventional-commit-formatted (release-plz turns them into the `CHANGELOG.md` entry automatically; no manual edit needed).
 - [ ] The guide in `docs/` was updated if user-facing behavior changed.
 - [ ] I agree to license my contribution under the terms of both `MIT` and `Apache-2.0`, as described in `CONTRIBUTING.md`.
 

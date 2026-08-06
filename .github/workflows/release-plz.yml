@@ -1,0 +1,83 @@
+name: Release-plz
+
+# release-plz maintains a rolling Release PR (`release-pr` job) and, once
+# that PR is merged to main, creates and pushes the `vX.Y.Z` tag (`release`
+# job). It never runs `cargo publish` or creates the GitHub Release itself —
+# see release-plz.toml for why. .github/workflows/release.yml, triggered by
+# the tag this workflow pushes, remains the single place a crates.io publish
+# or a GitHub Release happens.
+#
+# Flow: merge a feature PR -> this workflow updates (or opens) the Release PR
+# with a version bump inferred from conventional commits and a CHANGELOG.md
+# update -> a maintainer reviews and merges the Release PR when ready to ship
+# -> this workflow pushes the `vX.Y.Z` tag -> release.yml verifies, publishes
+# to crates.io, and creates the GitHub Release.
+#
+# Maintainer checklist for this to work:
+#  1. Settings -> Actions -> General -> "Workflow permissions": enable "Allow
+#     GitHub Actions to create and approve pull requests". Without it, the
+#     release-pr job below cannot open the Release PR using GITHUB_TOKEN.
+#  2. (Optional, if you'd rather not grant that repo-wide setting) Add a
+#     `RELEASE_PLZ_TOKEN` repository secret holding a PAT (fine-grained,
+#     "Pull requests: write" and "Contents: write" on this repo). It is used
+#     automatically in place of GITHUB_TOKEN when present.
+#
+# CARGO_REGISTRY_TOKEN is not needed here: `publish = false` in
+# release-plz.toml means this workflow never calls `cargo publish`. That
+# secret is only consumed by release.yml.
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  release-pr:
+    name: Release-plz PR
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    concurrency:
+      group: release-plz-pr-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run release-plz release-pr
+        uses: release-plz/action@v0.5
+        with:
+          command: release-pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}
+
+  release:
+    name: Release-plz tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run release-plz release
+        uses: release-plz/action@v0.5
+        with:
+          command: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN || secrets.GITHUB_TOKEN }}

@@ -190,9 +190,13 @@ the migration in the body.
 1. Fork the repository and create a branch from `main`.
 2. Make your change, with tests for anything behavioral.
 3. Run `cargo fmt --all`, clippy, and the tests.
-4. Add an entry under `## [Unreleased]` in [`CHANGELOG.md`](CHANGELOG.md) for
-   anything user-visible.
-5. Open the pull request against `main` and fill in the template.
+4. Open the pull request against `main` and fill in the template.
+
+You do not need to touch `CHANGELOG.md` yourself: release-plz generates its
+entry from your commit message(s) when it opens or updates the Release PR
+(see "Releases" below). Writing a clear, conventional-commit-formatted
+summary is what makes that entry readable, so treat the commit message as the
+changelog entry.
 
 Guidelines:
 
@@ -206,12 +210,37 @@ Guidelines:
 
 ## Releases
 
-Releases are cut by a maintainer: the version in `Cargo.toml` is bumped, the
-`Unreleased` changelog section is promoted to a versioned section, and a `vX.Y.Z`
-tag is pushed. The tag triggers
-[`.github/workflows/release.yml`](.github/workflows/release.yml), which verifies
-the tree and publishes to crates.io. Contributors do not need to do anything
-release-related beyond keeping the changelog current.
+Releases are automated end to end except for one deliberate human checkpoint:
+a maintainer decides when to ship.
+
+1. Every push to `main` (i.e. every merged PR) runs
+   [`.github/workflows/release-plz.yml`](.github/workflows/release-plz.yml),
+   which uses [release-plz](https://release-plz.dev) to open or update a
+   standing "Release PR". That PR bumps the version in `Cargo.toml` and adds a
+   `CHANGELOG.md` entry generated from conventional commit messages since the
+   last release.
+2. A maintainer reviews the Release PR like any other PR — editing the
+   generated changelog wording, or the version bump, if needed — and merges it
+   when ready to ship. Merging is the release decision; nothing ships before
+   that merge.
+3. Merging the Release PR makes release-plz create and push the corresponding
+   `vX.Y.Z` tag. release-plz itself never runs `cargo publish` and never
+   creates the GitHub Release (see [`release-plz.toml`](release-plz.toml)).
+4. That tag triggers
+   [`.github/workflows/release.yml`](.github/workflows/release.yml), which
+   re-verifies the tree (fmt, clippy, tests, the tag-matches-`Cargo.toml`
+   check), runs the one and only `cargo publish` to crates.io, and creates the
+   GitHub Release.
+
+Contributors do not need to do anything release-related beyond writing a
+clear commit message; see "Pull requests" above. `.github/workflows/release.yml`
+requires a `CARGO_REGISTRY_TOKEN` repository secret; without it, `verify` still
+runs but `publish` fails immediately with an explanatory message, so nothing is
+ever half-published. `.github/workflows/release-plz.yml` requires either the
+"Allow GitHub Actions to create and approve pull requests" repository setting
+(Settings -> Actions -> General -> Workflow permissions) or a `RELEASE_PLZ_TOKEN`
+PAT secret, so it can open the Release PR; see the comments at the top of that
+workflow for details.
 
 ## License
 
