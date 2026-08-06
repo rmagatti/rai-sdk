@@ -470,75 +470,75 @@ where
                     for line in event.lines() {
                         if let Some(field) = line.strip_prefix("data:") {
                             let data = field.strip_prefix(' ').unwrap_or(field);
-                                if data == "[DONE]" {
-                                    return;
-                                }
+                            if data == "[DONE]" {
+                                return;
+                            }
 
-                                match serde_json::from_str::<OpenAIStreamResponse>(data) {
-                                    Ok(stream_response) => {
-                                        if let Some(usage) = stream_response.usage {
-                                            yield Ok(crate::provider::ProviderStreamEvent::Done {
-                                                finish_reason: stream_response.choices.first().and_then(|c| c.finish_reason.clone()).or(Some("stop".to_string())),
-                                                usage: Some(Usage {
-                                                    prompt_tokens: Some(usage.prompt_tokens),
-                                                    completion_tokens: Some(usage.completion_tokens),
-                                                    total_tokens: Some(usage.total_tokens),
-                                                }),
-                                            });
-                                            continue;
+                            match serde_json::from_str::<OpenAIStreamResponse>(data) {
+                                Ok(stream_response) => {
+                                    if let Some(usage) = stream_response.usage {
+                                        yield Ok(crate::provider::ProviderStreamEvent::Done {
+                                            finish_reason: stream_response.choices.first().and_then(|c| c.finish_reason.clone()).or(Some("stop".to_string())),
+                                            usage: Some(Usage {
+                                                prompt_tokens: Some(usage.prompt_tokens),
+                                                completion_tokens: Some(usage.completion_tokens),
+                                                total_tokens: Some(usage.total_tokens),
+                                            }),
+                                        });
+                                        continue;
+                                    }
+
+                                    if let Some(choice) = stream_response.choices.first() {
+                                        if let Some(content) = &choice.delta.content {
+                                            if !content.is_empty() {
+                                                yield Ok(crate::provider::ProviderStreamEvent::Text(content.clone()));
+                                            }
                                         }
 
-                                        if let Some(choice) = stream_response.choices.first() {
-                                            if let Some(content) = &choice.delta.content {
-                                                if !content.is_empty() {
-                                                    yield Ok(crate::provider::ProviderStreamEvent::Text(content.clone()));
+                                        if let Some(tool_calls) = &choice.delta.tool_calls {
+                                            for tc in tool_calls {
+                                                if let Some(id) = &tc.id {
+                                                    current_tool_id = Some(id.clone());
+                                                    let name = tc.function.as_ref().and_then(|f| f.name.clone()).unwrap_or_default();
+                                                    yield Ok(crate::provider::ProviderStreamEvent::ToolCallStart {
+                                                        id: id.clone(),
+                                                        name,
+                                                    });
                                                 }
-                                            }
-
-                                            if let Some(tool_calls) = &choice.delta.tool_calls {
-                                                for tc in tool_calls {
-                                                    if let Some(id) = &tc.id {
-                                                        current_tool_id = Some(id.clone());
-                                                        let name = tc.function.as_ref().and_then(|f| f.name.clone()).unwrap_or_default();
-                                                        yield Ok(crate::provider::ProviderStreamEvent::ToolCallStart {
-                                                            id: id.clone(),
-                                                            name,
+                                                if let Some(func) = &tc.function {
+                                                    if let Some(args) = &func.arguments {
+                                                        let id_to_use = current_tool_id.clone().unwrap_or_default();
+                                                        yield Ok(crate::provider::ProviderStreamEvent::ToolCallChunk {
+                                                            id: id_to_use,
+                                                            arguments: args.clone(),
                                                         });
                                                     }
-                                                    if let Some(func) = &tc.function {
-                                                        if let Some(args) = &func.arguments {
-                                                            let id_to_use = current_tool_id.clone().unwrap_or_default();
-                                                            yield Ok(crate::provider::ProviderStreamEvent::ToolCallChunk {
-                                                                id: id_to_use,
-                                                                arguments: args.clone(),
-                                                            });
-                                                        }
-                                                    }
                                                 }
                                             }
+                                        }
 
-                                            if let Some(finish_reason) = &choice.finish_reason {
-                                                yield Ok(crate::provider::ProviderStreamEvent::Done {
-                                                    finish_reason: Some(finish_reason.clone()),
-                                                    usage: None,
-                                                });
-                                            }
+                                        if let Some(finish_reason) = &choice.finish_reason {
+                                            yield Ok(crate::provider::ProviderStreamEvent::Done {
+                                                finish_reason: Some(finish_reason.clone()),
+                                                usage: None,
+                                            });
                                         }
                                     }
-                                    Err(e) => {
-                                        debug!(error = %e, data = %data, "Failed to parse SSE chunk");
-                                    }
+                                }
+                                Err(e) => {
+                                    debug!(error = %e, data = %data, "Failed to parse SSE chunk");
                                 }
                             }
                         }
                     }
                 }
-                Err(e) => {
-                    yield Err(Error::Stream(e.to_string()));
-                    return;
-                }
+            }
+            Err(e) => {
+                yield Err(Error::Stream(e.to_string()));
+                return;
             }
         }
+    }
     }
 }
 
