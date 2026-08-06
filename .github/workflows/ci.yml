@@ -207,3 +207,28 @@ jobs:
 
       - name: cargo publish --dry-run
         run: cargo publish --dry-run --locked
+
+  conventional-title:
+    name: Conventional commit title
+    runs-on: ubuntu-latest
+    # This repository merges pull requests by squash only, which makes the PR
+    # title the commit message that lands on main — and that commit message
+    # is exactly what release-plz.yml reads to decide whether to release and
+    # how to categorize the change in CHANGELOG.md. A title outside
+    # Conventional Commits format either gets miscategorized or silently
+    # skipped by release-plz's commit_parsers (see release-plz.toml), so this
+    # is checked before merge rather than discovered after.
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Check pull request title
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          pattern='^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-z0-9./-]+\))?!?: .+'
+          if ! [[ "$TITLE" =~ $pattern ]]; then
+            echo "::error::Pull request title \"${TITLE}\" does not match Conventional Commits format."
+            echo "Expected: <type>(<optional scope>): <summary>, with type one of feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert (optionally suffixed with '!' for a breaking change)."
+            echo "This repository squash-merges pull requests, so this title becomes the commit on main that release-plz.yml reads to decide whether to release. See CONTRIBUTING.md's \"Commit conventions\" section."
+            exit 1
+          fi
+          echo "Pull request title matches Conventional Commits format."

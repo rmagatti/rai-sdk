@@ -185,14 +185,25 @@ Keep commits focused, and write a body when the reasoning is not obvious from
 the diff. Mark breaking changes with a `!` after the type (`feat!:`) and explain
 the migration in the body.
 
+**Pull request titles matter beyond style here.** This repository merges pull
+requests by squash only, so your PR title becomes the single commit message on
+`main` — and that commit message is exactly what release-plz reads to decide
+whether to cut a release and how to categorize it in `CHANGELOG.md`. Give the
+PR the same conventional-commit-formatted title you'd give a single commit. CI
+enforces this (the `conventional-title` job in
+[`ci.yml`](.github/workflows/ci.yml)) and it is a required check.
+
 ## Pull requests
 
 1. Fork the repository and create a branch from `main`.
 2. Make your change, with tests for anything behavioral.
 3. Run `cargo fmt --all`, clippy, and the tests.
-4. Add an entry under `## [Unreleased]` in [`CHANGELOG.md`](CHANGELOG.md) for
-   anything user-visible.
-5. Open the pull request against `main` and fill in the template.
+4. Open the pull request against `main`, with a conventional-commit-formatted
+   title (see above), and fill in the template.
+
+You do not need to touch `CHANGELOG.md` yourself: release-plz generates its
+entry from your PR title/commit message when your PR is squash-merged (see
+"Releases" below).
 
 Guidelines:
 
@@ -202,16 +213,83 @@ Guidelines:
 - Note explicitly if the change is breaking, and describe the migration.
 - Expect review feedback; push follow-up commits rather than force-pushing over
   history that has already been reviewed, unless asked.
-- All CI jobs must be green before merge.
+- All required checks must be green before merge, enforced by this
+  repository's branch ruleset on `main` (which also disallows force pushes and
+  branch deletion) — see the maintainer setup checklist in this repository's
+  release-automation pull request if the ruleset isn't showing up yet under
+  Settings -> Rules.
+- Merging is by squash only; merge commits and rebase merges are disabled on
+  this repository so the PR title reliably becomes the commit release-plz
+  reads.
 
 ## Releases
 
-Releases are cut by a maintainer: the version in `Cargo.toml` is bumped, the
-`Unreleased` changelog section is promoted to a versioned section, and a `vX.Y.Z`
-tag is pushed. The tag triggers
-[`.github/workflows/release.yml`](.github/workflows/release.yml), which verifies
-the tree and publishes to crates.io. Contributors do not need to do anything
-release-related beyond keeping the changelog current.
+Releases are automated end to end, with **no Release PR and no separate ship
+decision**: merging a PR to `main` is the release decision. This is a
+deliberate trade-off, chosen over a Release-PR flow, in exchange for shipping
+immediately instead of batching changes behind a second PR:
+
+1. Merging a PR (squash-merges it, using the PR title as the commit message)
+   pushes that commit to `main`, which runs
+   [`.github/workflows/release-plz.yml`](.github/workflows/release-plz.yml).
+2. That workflow checks whether any commit since the last tag is a `feat`,
+   `fix`, `perf`, `refactor`, `revert`, or breaking (`!`/`BREAKING CHANGE`)
+   commit. If not — e.g. a `docs`, `chore`, `ci`, `test`, `style`, or `build`
+   only change — it stops here. Nothing is released.
+3. Otherwise it runs `release-plz update`, which bumps the version in
+   `Cargo.toml` and adds a `CHANGELOG.md` entry generated from conventional
+   commit messages since the last release, then commits that directly to
+   `main` as `chore(release): vX.Y.Z`, and creates and pushes the
+   corresponding `vX.Y.Z` tag. release-plz itself never runs `cargo publish`
+   and never creates the GitHub Release (see
+   [`release-plz.toml`](release-plz.toml)).
+4. That tag triggers
+   [`.github/workflows/release.yml`](.github/workflows/release.yml), which
+   re-verifies the tree (fmt, clippy, tests, the tag-matches-`Cargo.toml`
+   check), runs the one and only `cargo publish` to crates.io, and creates the
+   GitHub Release.
+
+**The accepted trade-off:** every `feat`/`fix`/`perf`/`refactor`/`revert` (or
+breaking) merge to `main` publishes to crates.io immediately — there is no
+window to batch several merges into one release, and no maintainer review step
+between "PR merged" and "published." crates.io has no unpublish, only
+[yank](https://doc.rust-lang.org/cargo/reference/publishing.html#cargo-yank);
+a bad release is fixed forward (a follow-up patch release) or yanked, never
+erased. Reviewing the PR before merge — the same review every PR already
+gets — is the only gate.
+
+Contributors do not need to do anything release-related beyond writing a
+conventional-commit-formatted PR title; see "Pull requests" above. The
+following is maintainer-only setup, required once:
+
+- **`RELEASE_PLZ_TOKEN` (required, not optional).**
+  `.github/workflows/release-plz.yml` pushes the release commit and the
+  `vX.Y.Z` tag itself. GitHub Actions deliberately does not let a push made
+  with the default `GITHUB_TOKEN` trigger other workflows, so a tag pushed
+  with it would never start `release.yml` and nothing would ever publish —
+  silently, with no error. The workflow hard-fails if this fine-grained PAT
+  secret (`Contents: Read and write` on this repository only) is missing
+  rather than falling back to `GITHUB_TOKEN`. See the maintainer checklist in
+  the comments at the top of `release-plz.yml` for exact PAT creation steps.
+- **`CARGO_REGISTRY_TOKEN`.** Required by `.github/workflows/release.yml`;
+  without it `verify` still runs but `publish` fails immediately with an
+  explanatory message, so nothing is ever half-published.
+- **The repository ruleset on `main`** requires the CI checks (including
+  `conventional-title`) and blocks force-pushes and branch deletion. Without
+  a bypass, a brand new commit that was never itself pushed to a checked ref
+  — like release-plz's own release commit — would fail that same
+  required-status-checks rule the ruleset enforces on everyone else. The
+  obvious-looking bypass (exempting the `github-actions` app as an
+  `Integration` actor) does not work on a personal, non-org-owned repository
+  like this one — GitHub's Rulesets API rejects it ("Actor GitHub Actions
+  integration must be part of the ruleset source or owner organization").
+  Since a push authenticated with `RELEASE_PLZ_TOKEN` is attributed to that
+  PAT's *owning user account* rather than to the `github-actions` app, and
+  that account is this repository's admin, the bypass entry that actually
+  works is `actor_type: RepositoryRole`, `actor_id: 5` (Repository admin),
+  `bypass_mode: always`. See the comments at the top of `release-plz.yml` for
+  the exact `gh api` payload and the full self-trigger guard that stops this
+  workflow from reacting to its own commit.
 
 ## License
 

@@ -1,0 +1,66 @@
+# Configuration for release-plz (https://release-plz.dev), which runs
+# directly on every push to main: it bumps the version in Cargo.toml, updates
+# CHANGELOG.md from conventional commits since the last tag, commits that
+# directly to main, and then creates and pushes the release tag. There is no
+# Release PR. See .github/workflows/release-plz.yml for how this is wired up
+# (including the self-trigger guard), and CONTRIBUTING.md for the release flow
+# from a contributor's perspective.
+#
+# Division of responsibilities in this repo:
+# - release-plz (this file + the release-plz workflow) computes the version
+#   bump and CHANGELOG.md entry from conventional commits, commits that bump
+#   directly to main as `chore(release): vX.Y.Z`, and creates and pushes the
+#   corresponding `vX.Y.Z` git tag.
+# - .github/workflows/release.yml, triggered by that tag, verifies the tree,
+#   runs the one and only `cargo publish` to crates.io, and creates the
+#   GitHub Release.
+#
+# `publish = false` and `git_release_enable = false` below are both
+# deliberate: release.yml already owns `cargo publish` and GitHub Release
+# creation for the tag it's triggered by, so release-plz must not race it by
+# doing either a second time. This keeps exactly one path to crates.io and
+# exactly one path to a GitHub Release, both gated on the tag.
+[workspace]
+# Never run `cargo publish` from release-plz; release.yml's `publish` job is
+# the single place that happens, after its own verification job re-runs
+# fmt/clippy/tests against the tagged commit.
+publish = false
+
+# Never create the GitHub Release from release-plz; release.yml's
+# `github-release` job is the single place that happens, after `publish`
+# succeeds. release-plz still creates and pushes the git tag itself, which is
+# what triggers release.yml.
+git_release_enable = false
+
+# Match the tag pattern release.yml listens for (`on: push: tags: - "v*"`).
+git_tag_name = "v{{ version }}"
+
+[changelog]
+# Route this repo's conventional-commit types (documented in
+# CONTRIBUTING.md's "Commit conventions" section) onto the Keep a Changelog
+# headings already used in CHANGELOG.md (Added / Fixed / Documentation /
+# Changed). Commit kinds that are never user-facing are left out of the
+# generated section entirely. Since there is no Release PR to hand-edit
+# before merging, getting these groupings right matters more here than it
+# would in a review-before-merge flow: what release-plz generates is what
+# ships, verbatim, in the same commit that bumps the version.
+commit_parsers = [
+  { message = "^feat", group = "Added" },
+  { message = "^fix", group = "Fixed" },
+  { message = "^docs", group = "Documentation" },
+  { message = "^refactor", group = "Changed" },
+  { message = "^perf", group = "Changed" },
+  { message = "^revert", group = "Changed" },
+  { message = "^style", group = "Changed" },
+  { message = "^test", skip = true },
+  { message = "^chore\\(deps\\)", skip = true },
+  { message = "^chore\\(dev-deps\\)", skip = true },
+  { message = "^chore\\(ci\\)", skip = true },
+  { message = "^chore\\(release\\)", skip = true },
+  { message = "^chore", skip = true },
+  { message = "^ci", skip = true },
+  { message = "^build", skip = true },
+]
+# Never drop a breaking-change commit into the "other/uncategorized" bucket,
+# even if its type would otherwise be skipped above.
+protect_breaking_commits = true
