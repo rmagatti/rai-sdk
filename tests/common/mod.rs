@@ -363,6 +363,185 @@ pub async fn split_sse(parts: Vec<String>) -> SplitSseServer {
     }
 }
 
+// ── A raw SSE server that reports when the client hangs up ─────────────────
+
+/// A single-connection loopback SSE server that writes `parts`, then holds the
+/// response body open until the client goes away.
+///
+/// Cancellation cannot be observed from the client side — the point of the
+/// behavior is that *nothing* happens afterwards. So the assertion has to come
+/// from the server: this one parks on a read after sending its parts, which
+/// completes only when the peer closes the connection, and reports that through
+/// [`DisconnectSseServer::wait_for_disconnect`].
+///
+/// The response uses `Connection: close` with no `Content-Length`, so the body
+/// is terminated by EOF. Never sending EOF is what keeps the generation
+/// "in progress" for as long as the test needs.
+pub struct DisconnectSseServer {
+    base_url: String,
+    streaming: Option<tokio::sync::oneshot::Receiver<()>>,
+    disconnected: Option<tokio::sync::oneshot::Receiver<()>>,
+    handle: tokio::task::JoinHandle<()>,
+}
+
+impl DisconnectSseServer {
+    /// Base URL to hand to a provider's `*_base_url` setting.
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
+    /// Wait until the request has arrived and every part has been written.
+    ///
+    /// Lets a test cancel a consumer at a point where the generation is
+    /// genuinely in flight, without guessing at a delay.
+    pub async fn wait_until_streaming(&mut self) {
+        let receiver = self
+            .streaming
+            .take()
+            .expect("wait_until_streaming should only be called once");
+
+        tokio::time::timeout(Duration::from_secs(10), receiver)
+            .await
+            .expect("the client never opened the upstream connection")
+            .expect("the server task ended before it started streaming");
+    }
+
+    /// Wait for the client to close the connection.
+    ///
+    /// Panics if that does not happen within a generous grace period, which is
+    /// exactly the failure being guarded against: an upstream request that
+    /// outlives its consumer is an orphaned generation.
+    pub async fn wait_for_disconnect(&mut self) {
+        let receiver = self
+            .disconnected
+            .take()
+            .expect("wait_for_disconnect should only be called once");
+
+        // The timeout only bounds the failure case. The success path resolves
+        // as soon as the socket closes, so this adds no fixed delay.
+        tokio::time::timeout(Duration::from_secs(10), receiver)
+            .await
+            .expect("the client never closed the upstream connection")
+            .expect("the server task ended without reporting a disconnect");
+    }
+}
+
+impl Drop for DisconnectSseServer {
+    fn drop(&mut self) {
+        self.handle.abort();
+    }
+}
+
+/// Serve `parts` on one connection, then wait for the client to disconnect.
+pub async fn sse_until_disconnect(parts: Vec<String>) -> DisconnectSseServer {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind loopback listener");
+    let addr = listener.local_addr().expect("read listener address");
+    let (notify, disconnected) = tokio::sync::oneshot::channel();
+    let (notify_streaming, streaming) = tokio::sync::oneshot::channel();
+
+    let handle = tokio::spawn(async move {
+        let Ok((mut socket, _)) = listener.accept().await else {
+            return;
+        };
+
+        let mut scratch = [0_u8; 8192];
+        let _ = socket.read(&mut scratch).await;
+
+        let head = "HTTP/1.1 200 OK\r\n\
+             Content-Type: text/event-stream\r\n\
+             Cache-Control: no-cache\r\n\
+             Connection: close\r\n\r\n";
+        if socket.write_all(head.as_bytes()).await.is_err() {
+            return;
+        }
+
+        for part in parts {
+            if socket.write_all(part.as_bytes()).await.is_err() {
+                return;
+            }
+            if socket.flush().await.is_err() {
+                return;
+            }
+        }
+
+        let _ = notify_streaming.send(());
+
+        // Park here. The client sends nothing more on this socket, so this read
+        // resolves only when it closes the connection (`Ok(0)`) or resets it.
+        loop {
+            match socket.read(&mut scratch).await {
+                Ok(0) | Err(_) => break,
+                Ok(_) => continue,
+            }
+        }
+
+        let _ = notify.send(());
+    });
+
+    DisconnectSseServer {
+        base_url: format!("http://{addr}"),
+        streaming: Some(streaming),
+        disconnected: Some(disconnected),
+        handle,
+    }
+}
+
+/// Serve `parts` as a *chunked* response, then hang up without the terminating
+/// zero-length chunk.
+///
+/// That is a malformed HTTP body, so the client's transport reports a mid-stream
+/// failure — the "the upstream died halfway through" case, as opposed to a
+/// provider that explicitly refuses. The two must be distinguishable, hence the
+/// deliberately broken framing.
+pub async fn truncated_chunked_sse(parts: Vec<String>) -> SplitSseServer {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind loopback listener");
+    let addr = listener.local_addr().expect("read listener address");
+
+    let handle = tokio::spawn(async move {
+        let Ok((mut socket, _)) = listener.accept().await else {
+            return;
+        };
+
+        let mut scratch = [0_u8; 8192];
+        let _ = socket.read(&mut scratch).await;
+
+        let head = "HTTP/1.1 200 OK\r\n\
+             Content-Type: text/event-stream\r\n\
+             Cache-Control: no-cache\r\n\
+             Transfer-Encoding: chunked\r\n\r\n";
+        if socket.write_all(head.as_bytes()).await.is_err() {
+            return;
+        }
+
+        for part in parts {
+            let chunk = format!("{:x}\r\n{part}\r\n", part.len());
+            if socket.write_all(chunk.as_bytes()).await.is_err() {
+                return;
+            }
+            if socket.flush().await.is_err() {
+                return;
+            }
+        }
+
+        // No `0\r\n\r\n`: close mid-body so the client sees a truncated
+        // response rather than a clean end of stream.
+        drop(socket);
+    });
+
+    SplitSseServer {
+        base_url: format!("http://{addr}"),
+        handle,
+    }
+}
+
 // ── Error assertions ───────────────────────────────────────────────────────
 
 /// Unwrap a `Result` that must be an error, reporting the success case.

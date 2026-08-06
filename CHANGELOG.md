@@ -11,7 +11,49 @@ the public API. Breaking changes are always called out below.
 
 ## [Unreleased]
 
-Nothing yet.
+Everything below is additive; nothing in the existing public API changed shape.
+
+### Added
+
+- **Serializable stream events for server-side proxying.** A new `wire` module
+  lets a server that holds the provider credentials re-emit a generation to its
+  own clients — over SSE or a WebSocket — without losing stream semantics.
+  - `RequestBuilder::stream_wire_events()` yields `WireStreamEvent`s: an
+    internally tagged serde enum whose `"type"` discriminants
+    (`message_start`, `text_delta`, `tool_call_start`, `tool_call_delta`,
+    `tool_call_end`, `tool_result`, `usage`, `message_stop`, `turn_complete`,
+    `error`) are a documented compatibility surface, pinned by a committed JSON
+    fixture per variant. `WIRE_PROTOCOL_VERSION` names the current framing and
+    rides on every `message_start`.
+  - Items are not `Result`s. A mid-stream provider failure arrives as an
+    `error` event carrying a serializable `WireError`, so a client can tell
+    "the provider refused" from "the network died" — the latter being a stream
+    that ends with no terminal event at all.
+  - The terminal `usage` event carries the provider's token counts, so a server
+    can meter entitlements and a client can display them from the same payload.
+  - `StreamAccumulator` is the receiving half: the client-side counterpart of
+    `stream_accumulated()`, reassembling wire events into one `Response`
+    including usage and tool calls, and rejecting a truncated stream rather
+    than silently returning a short answer.
+  - `WireStreamEvent` implements `From<StreamEvent>`, and `StreamEvent`
+    implements `TryFrom<WireStreamEvent>`, so existing high-level events can be
+    forwarded and recovered without loss.
+  - `examples/sse_proxy.rs` runs the whole loop — axum handler, SSE
+    re-emission, client-side reassembly — in one process.
+- `PartialEq` on the shared data types (`Message`, `ContentBlock`,
+  `ImageSource`, `FileSource`, `ToolCall`, `ToolDefinition`,
+  `ConversationTurn`, `StreamEvent`, `Prompt`, `Usage`, `Response`,
+  `StreamChunk`), so callers can compare and assert on them directly.
+
+### Documentation
+
+- **Cancellation is now specified.** Dropping a stream aborts the upstream
+  provider request: every streaming method is driven by its consumer, so
+  nothing keeps generating in a detached task and no orphaned generation burns
+  tokens. This was already the behavior; it is now documented on `stream()`,
+  `generate_stream_events()`, `stream_wire_events()`, and
+  `stream_accumulated()`, covered by tests, and explained in the guide — along
+  with its consequence that a cancelled generation reports no usage.
 
 ## [0.1.1] - 2026-08-05
 

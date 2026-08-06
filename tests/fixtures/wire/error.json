@@ -1,0 +1,9 @@
+{
+  "error": {
+    "kind": "rate_limit",
+    "message": "rate limit exceeded for anthropic: too many requests",
+    "provider": "anthropic",
+    "retryable": true
+  },
+  "type": "error"
+}

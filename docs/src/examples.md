@@ -40,9 +40,19 @@ Registers a typed tool and lets `generate()` run the loop: the model requests th
 
 Source: [`examples/tool_calling.rs`](https://github.com/rmagatti/rai-sdk/blob/main/examples/tool_calling.rs)
 
+## sse_proxy
+
+```sh
+cargo run --example sse_proxy
+```
+
+The full server-side proxy loop in one process: an axum handler streams a generation with `stream_wire_events()`, re-emits each event as an SSE `data:` payload, and a client in the same binary parses them back and reassembles one `Response` with `StreamAccumulator`. Reach for this when your server holds the provider credentials and streams results on to a desktop or browser client. See [Streaming](./streaming.md#proxying-a-stream-to-your-own-clients).
+
+Source: [`examples/sse_proxy.rs`](https://github.com/rmagatti/rai-sdk/blob/main/examples/sse_proxy.rs)
+
 ## Using a different provider
 
-All three examples use `Model::gpt4o_mini()`. Change the constructor and set that provider's key to try another:
+All four examples use `Model::gpt4o_mini()`. Change the constructor and set that provider's key to try another:
 
 ```rust,no_run
 # use rai_sdk::Model;

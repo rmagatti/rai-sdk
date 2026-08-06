@@ -22,6 +22,10 @@
 //! - **Streaming** — consume raw provider events, or use
 //!   [`RequestBuilder::stream_accumulated`] to stream internally and return a
 //!   complete [`Response`].
+//! - **Proxyable streams** — [`RequestBuilder::stream_wire_events`] yields
+//!   serializable [`WireStreamEvent`]s so a server can re-emit a generation to
+//!   its own clients over SSE, and [`StreamAccumulator`] reassembles them on the
+//!   far end. See the [`wire`] module.
 //! - **Retries** — transient rate-limit, timeout, and HTTP failures are retried
 //!   with configurable exponential backoff and jitter via [`RetryConfig`].
 //! - **Multimodal prompts** — build prompts from text, image, audio, video, and
@@ -137,6 +141,7 @@ pub mod model;
 pub mod provider;
 pub mod retry;
 pub mod tool;
+pub mod wire;
 
 pub use client::{Client, ClientBuilder, RequestBuilder};
 pub use config::Config;
@@ -150,3 +155,6 @@ pub use model::{AnthropicModel, Model, OpenAIModel, OpenRouterModel};
 pub use retry::RetryConfig;
 pub use schemars::{self, JsonSchema};
 pub use tool::{Tool, ToolContext};
+pub use wire::{
+    StreamAccumulator, WIRE_PROTOCOL_VERSION, WireError, WireErrorKind, WireStreamEvent,
+};

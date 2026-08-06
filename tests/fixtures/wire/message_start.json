@@ -1,0 +1,6 @@
+{
+  "model": "gpt-4o-mini",
+  "protocol_version": 1,
+  "provider": "openai",
+  "type": "message_start"
+}

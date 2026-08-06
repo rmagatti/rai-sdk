@@ -1,0 +1,6 @@
+{
+  "arguments": "{\"city\":\"Paris\"}",
+  "id": "call_1",
+  "name": "get_weather",
+  "type": "tool_call_end"
+}

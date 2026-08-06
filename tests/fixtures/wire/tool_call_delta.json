@@ -1,0 +1,5 @@
+{
+  "arguments": "{\"city\":",
+  "id": "call_1",
+  "type": "tool_call_delta"
+}
