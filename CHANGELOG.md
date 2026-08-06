@@ -11,7 +11,13 @@ the public API. Breaking changes are always called out below.
 
 ## [Unreleased]
 
-## [0.1.2](https://github.com/rmagatti/rai-sdk/compare/v0.1.1...v0.1.2) - 2026-08-06
+## [0.2.0](https://github.com/rmagatti/rai-sdk/compare/v0.1.1...v0.2.0) - 2026-08-06
+
+### Breaking changes
+
+- `Model`, `ProviderKind`, and `Error` gain new variants for the
+  OpenAI-compatible provider; downstream exhaustive `match`es need new arms.
+  (Released as a minor bump per this project's pre-1.0 policy above.)
 
 ### Added
 
