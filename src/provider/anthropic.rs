@@ -387,6 +387,10 @@ impl AnthropicProvider {
         async_stream::stream! {
             tokio::pin!(byte_stream);
             let mut current_tool_id: Option<String> = None;
+            // Anthropic splits usage across two events: `message_start` reports
+            // the input tokens and `message_delta` the final output tokens, so
+            // the input count has to be held here until the delta arrives.
+            let mut input_tokens: Option<i32> = None;
 
             while let Some(chunk_result) = byte_stream.next().await {
                 match chunk_result {
@@ -445,9 +449,9 @@ impl AnthropicProvider {
                                 "message_delta" => {
                                     if let Ok(delta) = serde_json::from_str::<MessageDelta>(&event_data) {
                                         let usage = delta.usage.map(|u| Usage {
-                                            prompt_tokens: None,
+                                            prompt_tokens: input_tokens,
                                             completion_tokens: Some(u.output_tokens),
-                                            total_tokens: None,
+                                            total_tokens: input_tokens.map(|input| input + u.output_tokens),
                                         });
 
                                         if delta.delta.stop_reason.is_some() || usage.is_some() {
@@ -460,13 +464,10 @@ impl AnthropicProvider {
                                 }
                                 "message_start" => {
                                     if let Ok(start) = serde_json::from_str::<MessageStart>(&event_data) {
-                                        let _usage = Usage {
-                                            prompt_tokens: Some(start.message.usage.input_tokens),
-                                            completion_tokens: Some(start.message.usage.output_tokens),
-                                            total_tokens: Some(start.message.usage.input_tokens + start.message.usage.output_tokens),
-                                        };
-                                        // Anthropic splits usage between message_start (input) and message_delta (output)
-                                        // But we can just send an early Done or wait for message_delta to send final usage.
+                                        // Only the input count is authoritative here: the
+                                        // `output_tokens` reported alongside it is a partial
+                                        // figure that `message_delta` later supersedes.
+                                        input_tokens = Some(start.message.usage.input_tokens);
                                     }
                                 }
                                 "error" => {

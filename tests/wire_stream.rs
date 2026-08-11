@@ -583,4 +583,132 @@ mod anthropic {
         );
         assert_eq!(response.finish_reason.as_deref(), Some("end_turn"));
     }
+
+    /// The token counts of a whole generation, in the two events Anthropic
+    /// spreads them over. The `output_tokens` on `message_start` is the partial
+    /// count at that point, not the final one.
+    fn split_usage_stream_body() -> String {
+        sse_body(&[
+            &named_event(
+                "message_start",
+                json!({
+                    "type": "message_start",
+                    "message": {
+                        "id": "msg_01",
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [],
+                        "usage": { "input_tokens": 42, "output_tokens": 1 }
+                    }
+                }),
+            ),
+            &named_event(
+                "content_block_delta",
+                json!({
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": { "type": "text_delta", "text": "Hello" }
+                }),
+            ),
+            &named_event(
+                "message_delta",
+                json!({
+                    "type": "message_delta",
+                    "delta": { "stop_reason": "end_turn" },
+                    "usage": { "output_tokens": 7 }
+                }),
+            ),
+        ])
+    }
+
+    /// Anthropic is the one dialect that splits usage across events: input
+    /// tokens ride on `message_start` and output tokens on `message_delta`.
+    /// Reading either event in isolation loses half the accounting, so the
+    /// input count has to survive until the delta arrives.
+    #[tokio::test]
+    async fn usage_split_across_two_events_is_reported_whole() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/messages"))
+            .respond_with(Script::new(vec![Step::sse(split_usage_stream_body())]))
+            .mount(&server)
+            .await;
+
+        let client = anthropic_builder(&server.uri())
+            .model(Model::claude_sonnet_46())
+            .build()
+            .expect("client should build");
+
+        let events = collect_wire(
+            client
+                .request()
+                .prompt("stream please")
+                .stream_wire_events()
+                .await
+                .expect("the stream should open"),
+        )
+        .await;
+
+        assert_eq!(
+            tags(&events),
+            vec!["message_start", "text_delta", "usage", "message_stop"]
+        );
+
+        let response =
+            StreamAccumulator::accumulate(futures::stream::iter(through_the_wire(&events)))
+                .await
+                .expect("the proxied stream should reassemble");
+        let usage = response.usage.expect("usage should survive");
+        assert_eq!(usage.prompt_tokens, Some(42));
+        // The final output count, not the partial one from `message_start`.
+        assert_eq!(usage.completion_tokens, Some(7));
+        assert_eq!(usage.total_tokens, Some(49));
+    }
+
+    /// Without a `message_start` there is no input count to report, and an
+    /// unknown count is left unknown rather than guessed at from the half of
+    /// the accounting that did arrive.
+    #[tokio::test]
+    async fn usage_without_a_message_start_leaves_the_prompt_count_unknown() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/messages"))
+            .respond_with(Script::new(vec![Step::sse(sse_body(&[&named_event(
+                "message_delta",
+                json!({
+                    "type": "message_delta",
+                    "delta": { "stop_reason": "end_turn" },
+                    "usage": { "output_tokens": 7 }
+                }),
+            )]))]))
+            .mount(&server)
+            .await;
+
+        let client = anthropic_builder(&server.uri())
+            .model(Model::claude_sonnet_46())
+            .build()
+            .expect("client should build");
+
+        let events = collect_wire(
+            client
+                .request()
+                .prompt("stream please")
+                .stream_wire_events()
+                .await
+                .expect("the stream should open"),
+        )
+        .await;
+
+        let usage = events
+            .iter()
+            .find_map(|event| match event {
+                WireStreamEvent::Usage { usage } => Some(usage),
+                _ => None,
+            })
+            .expect("the stream should still report the output tokens it saw");
+
+        assert_eq!(usage.prompt_tokens, None);
+        assert_eq!(usage.completion_tokens, Some(7));
+        assert_eq!(usage.total_tokens, None);
+    }
 }
