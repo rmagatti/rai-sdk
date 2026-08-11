@@ -11,6 +11,12 @@ the public API. Breaking changes are always called out below.
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/rmagatti/rai-sdk/compare/v0.2.0...v0.2.1) - 2026-08-11
+
+### Fixed
+
+- *(anthropic)* report input tokens from streaming usage ([#10](https://github.com/rmagatti/rai-sdk/pull/10))
+
 ## [0.2.0](https://github.com/rmagatti/rai-sdk/compare/v0.1.1...v0.2.0) - 2026-08-06
 
 ### Breaking changes
