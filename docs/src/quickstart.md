@@ -104,6 +104,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 Note that `temperature` and `top_p` are ignored for OpenAI reasoning (o-series) models, which do not accept them.
 
+For repeated Anthropic requests that share a long system prompt or tool set,
+opt in to Anthropic's ephemeral prompt caching:
+
+```rust
+use rai_sdk::GenerationConfig;
+
+let config = GenerationConfig::new().with_prompt_caching(true);
+```
+
+This setting adds cache breakpoints to Anthropic requests only. Other providers
+silently ignore it, and caching is off by default.
+
 ## Next steps
 
 - [Configuration](./configuration.md) — every environment variable and its builder equivalent.
