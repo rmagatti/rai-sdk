@@ -7,7 +7,8 @@
 //! override.
 //!
 //! Not every provider honours every field. `top_k` is ignored by providers that
-//! do not support it, and OpenAI reasoning models drop `temperature`/`top_p`.
+//! do not support it, Anthropic alone honours `prompt_caching`, and OpenAI
+//! reasoning models drop `temperature`/`top_p`.
 //!
 //! # Examples
 //!
@@ -88,6 +89,10 @@ pub struct GenerationConfig {
     /// Maximum number of tool execution rounds before failing.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tool_rounds: Option<usize>,
+
+    /// Whether Anthropic prompt caching is enabled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_caching: Option<bool>,
 }
 
 impl GenerationConfig {
@@ -187,6 +192,25 @@ impl GenerationConfig {
     /// [`Error::ToolLoopLimitExceeded`](crate::Error::ToolLoopLimitExceeded).
     pub fn with_max_tool_rounds(mut self, max_tool_rounds: usize) -> Self {
         self.max_tool_rounds = Some(max_tool_rounds);
+        self
+    }
+
+    /// Enable or disable Anthropic prompt caching for this request.
+    ///
+    /// When enabled, Anthropic requests mark the system prompt and the final
+    /// tool definition as ephemeral cache breakpoints. Other providers silently
+    /// ignore this setting.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rai_sdk::GenerationConfig;
+    ///
+    /// let config = GenerationConfig::new().with_prompt_caching(true);
+    /// assert_eq!(config.prompt_caching, Some(true));
+    /// ```
+    pub fn with_prompt_caching(mut self, enabled: bool) -> Self {
+        self.prompt_caching = Some(enabled);
         self
     }
 

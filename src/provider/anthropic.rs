@@ -183,7 +183,18 @@ impl AnthropicProvider {
         stream: bool,
         tool_definitions: Option<&[ToolDefinition]>,
     ) -> AnthropicRequest {
-        let system = prompt.system_message().map(|s| s.to_string());
+        let prompt_caching = config.prompt_caching == Some(true);
+        let system = prompt.system_message().map(|text| {
+            if prompt_caching {
+                AnthropicSystemPrompt::Blocks(vec![AnthropicSystemBlock {
+                    kind: AnthropicSystemBlockType::Text,
+                    text: text.to_string(),
+                    cache_control: Some(AnthropicCacheControl::Ephemeral),
+                }])
+            } else {
+                AnthropicSystemPrompt::Text(text.to_string())
+            }
+        });
 
         let messages: Vec<AnthropicMessage> = prompt
             .conversation_messages()
@@ -208,12 +219,16 @@ impl AnthropicProvider {
                     format: AnthropicOutputFormat::JsonSchema { schema },
                 }),
             tools: tool_definitions.map(|tools| {
+                let last_index = tools.len().checked_sub(1);
                 tools
                     .iter()
-                    .map(|tool| AnthropicToolDefinition {
+                    .enumerate()
+                    .map(|(index, tool)| AnthropicToolDefinition {
                         name: tool.name.clone(),
                         description: tool.description.clone(),
                         input_schema: tool.input_schema.clone(),
+                        cache_control: (prompt_caching && Some(index) == last_index)
+                            .then_some(AnthropicCacheControl::Ephemeral),
                     })
                     .collect()
             }),
@@ -503,7 +518,7 @@ struct AnthropicRequest {
     model: String,
     messages: Vec<AnthropicMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    system: Option<String>,
+    system: Option<AnthropicSystemPrompt>,
     #[serde(skip_serializing_if = "Option::is_none")]
     stream: Option<bool>,
     max_tokens: i32,
@@ -527,6 +542,36 @@ struct AnthropicToolDefinition {
     #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<String>,
     input_schema: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_control: Option<AnthropicCacheControl>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+enum AnthropicSystemPrompt {
+    Text(String),
+    Blocks(Vec<AnthropicSystemBlock>),
+}
+
+#[derive(Debug, Serialize)]
+struct AnthropicSystemBlock {
+    #[serde(rename = "type")]
+    kind: AnthropicSystemBlockType,
+    text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_control: Option<AnthropicCacheControl>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum AnthropicSystemBlockType {
+    Text,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum AnthropicCacheControl {
+    Ephemeral,
 }
 
 #[derive(Debug, Serialize)]
@@ -731,5 +776,71 @@ mod tests {
             }
             _ => panic!("Expected Anthropic JSON schema output_config"),
         }
+    }
+
+    #[test]
+    fn prompt_caching_serializes_system_and_last_tool_breakpoints() {
+        let provider = test_provider();
+        let prompt = Prompt::new(vec![
+            Message::system("Cache this prefix."),
+            Message::user("Hello"),
+        ]);
+        let config = GenerationConfig::new().with_prompt_caching(true);
+        let tools = vec![
+            ToolDefinition {
+                name: "first".to_string(),
+                description: None,
+                input_schema: serde_json::json!({ "type": "object" }),
+            },
+            ToolDefinition {
+                name: "second".to_string(),
+                description: Some("Second tool".to_string()),
+                input_schema: serde_json::json!({ "type": "object" }),
+            },
+        ];
+
+        let request = provider.build_request(
+            &AnthropicModel::ClaudeSonnet45,
+            &prompt,
+            &config,
+            false,
+            Some(&tools),
+        );
+        let body = serde_json::to_value(request).expect("request should serialize");
+
+        assert_eq!(
+            body["system"],
+            serde_json::json!([{
+                "type": "text",
+                "text": "Cache this prefix.",
+                "cache_control": { "type": "ephemeral" }
+            }])
+        );
+        assert!(body["tools"][0].get("cache_control").is_none());
+        assert_eq!(
+            body["tools"][1]["cache_control"],
+            serde_json::json!({ "type": "ephemeral" })
+        );
+    }
+
+    #[test]
+    fn prompt_caching_off_preserves_the_existing_system_wire_shape() {
+        let provider = test_provider();
+        let prompt = Prompt::new(vec![Message::system("Be brief."), Message::user("Hello")]);
+
+        let request = provider.build_request(
+            &AnthropicModel::ClaudeSonnet45,
+            &prompt,
+            &GenerationConfig::new(),
+            false,
+            None,
+        );
+        let body = serde_json::to_value(request).expect("request should serialize");
+
+        assert_eq!(body["system"], "Be brief.");
+        assert!(
+            !body.to_string().contains("cache_control"),
+            "default requests must not gain cache-control fields"
+        );
     }
 }
