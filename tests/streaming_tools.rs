@@ -1,10 +1,10 @@
 //! How the streaming methods interact with tool registration.
 //!
-//! Streaming cannot execute a tool loop, so a request carrying tools is
-//! rejected. The subtlety these tests pin down is *which* tool set is
-//! consulted: the request's effective set, not the client's. That makes
-//! `no_tools()` a real escape hatch, and makes a request-level `tool()` an error
-//! even on a client that has none.
+//! Streaming cannot execute a tool loop, so the in-process streaming methods
+//! reject requests carrying tools. The wire-events proxy path is the exception:
+//! it advertises definitions without executing them and forwards tool calls to
+//! the remote client. These tests pin both behaviors and the effective tool-set
+//! rules around request overrides.
 //!
 //! Every test is offline: streams are served by a local `wiremock` mock.
 //!
@@ -15,9 +15,15 @@
 mod common;
 
 use common::{
-    Script, Step, collect_events, data_event, expect_error, openai_builder, sse_body, stream_text,
+    Script, Step, collect_events, data_event, expect_error, openai_builder, received_json_bodies,
+    sse_body, stream_text,
 };
-use rai_sdk::{Error, JsonSchema, Model, Tool, ToolContext};
+#[cfg(feature = "anthropic")]
+use common::{anthropic_builder, named_event};
+use futures::StreamExt;
+#[cfg(feature = "anthropic")]
+use rai_sdk::wire::WireStreamEvent;
+use rai_sdk::{Error, JsonSchema, Model, Tool, ToolContext, ToolDefinition};
 use serde::Deserialize;
 use serde_json::json;
 use wiremock::matchers::{method, path};
@@ -240,6 +246,180 @@ async fn the_low_level_client_api_still_uses_the_client_registry() {
                 &"stream please".into(),
                 &Default::default(),
             )
+            .await
+            .map(|_| "a stream"),
+    );
+    assert_rejected_for_tools(error);
+}
+
+#[tokio::test]
+async fn wire_events_accept_and_advertise_registered_tools() {
+    let server = streaming_mock().await;
+    let client = openai_builder(&server.uri())
+        .model(Model::gpt4o_mini())
+        .tool(echo_tool())
+        .build()
+        .expect("client should build");
+
+    let mut stream = client
+        .request()
+        .prompt("stream please")
+        .stream_wire_events()
+        .await
+        .expect("wire events should support registered tools");
+    while stream.next().await.is_some() {}
+
+    let bodies = received_json_bodies(&server).await;
+    assert_eq!(bodies.len(), 1);
+    assert_eq!(bodies[0]["tools"][0]["function"]["name"], "echo");
+    assert_eq!(
+        bodies[0]["tools"][0]["function"]["description"],
+        "Echo the input back"
+    );
+}
+
+#[cfg(feature = "anthropic")]
+#[tokio::test]
+async fn wire_events_advertise_definition_only_tools_and_forward_anthropic_tool_use() {
+    let server = MockServer::start().await;
+    let body = sse_body(&[
+        &named_event(
+            "message_start",
+            json!({
+                "type": "message_start",
+                "message": { "usage": { "input_tokens": 12, "output_tokens": 0 } }
+            }),
+        ),
+        &named_event(
+            "content_block_start",
+            json!({
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {
+                    "type": "tool_use",
+                    "id": "toolu_123",
+                    "name": "echo",
+                    "input": {}
+                }
+            }),
+        ),
+        &named_event(
+            "content_block_delta",
+            json!({
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": { "type": "input_json_delta", "partial_json": "{\"value\":" }
+            }),
+        ),
+        &named_event(
+            "content_block_delta",
+            json!({
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": { "type": "input_json_delta", "partial_json": "\"hello\"}" }
+            }),
+        ),
+        &named_event(
+            "message_delta",
+            json!({
+                "type": "message_delta",
+                "delta": { "stop_reason": "tool_use", "stop_sequence": null },
+                "usage": { "output_tokens": 8 }
+            }),
+        ),
+        &named_event("message_stop", json!({ "type": "message_stop" })),
+    ]);
+
+    Mock::given(method("POST"))
+        .and(path("/messages"))
+        .respond_with(Script::new(vec![Step::sse(body)]))
+        .mount(&server)
+        .await;
+
+    let definition = ToolDefinition {
+        name: "echo".to_string(),
+        description: Some("Echo the input back".to_string()),
+        input_schema: json!({
+            "type": "object",
+            "properties": { "value": { "type": "string" } },
+            "required": ["value"],
+            "additionalProperties": false
+        }),
+    };
+    let client = anthropic_builder(&server.uri())
+        .model(Model::claude_sonnet_46())
+        .build()
+        .expect("client should build");
+
+    let mut stream = client
+        .request()
+        .tool_definition(definition.clone())
+        .prompt("use echo")
+        .stream_wire_events()
+        .await
+        .expect("wire streaming should advertise definition-only tools");
+    let mut events = Vec::new();
+    while let Some(event) = stream.next().await {
+        events.push(event);
+    }
+
+    assert!(matches!(
+        events.get(1),
+        Some(WireStreamEvent::ToolCallStart { id, name })
+            if id == "toolu_123" && name == "echo"
+    ));
+    assert!(matches!(
+        events.get(2),
+        Some(WireStreamEvent::ToolCallDelta { id, arguments })
+            if id == "toolu_123" && arguments == "{\"value\":"
+    ));
+    assert!(matches!(
+        events.get(3),
+        Some(WireStreamEvent::ToolCallDelta { id, arguments })
+            if id == "toolu_123" && arguments == "\"hello\"}"
+    ));
+    assert!(matches!(
+        events.get(4),
+        Some(WireStreamEvent::ToolCallEnd { id, name, arguments })
+            if id == "toolu_123" && name == "echo" && arguments == "{\"value\":\"hello\"}"
+    ));
+    assert!(matches!(
+        events.last(),
+        Some(WireStreamEvent::MessageStop { finish_reason })
+            if finish_reason.as_deref() == Some("tool_use")
+    ));
+
+    let bodies = received_json_bodies(&server).await;
+    assert_eq!(bodies.len(), 1);
+    assert_eq!(
+        bodies[0]["tools"],
+        json!([{
+            "name": definition.name,
+            "description": definition.description,
+            "input_schema": definition.input_schema
+        }])
+    );
+}
+
+#[tokio::test]
+async fn definition_only_tools_remain_rejected_by_non_wire_streams() {
+    let server = streaming_mock().await;
+    let client = openai_builder(&server.uri())
+        .model(Model::gpt4o_mini())
+        .build()
+        .expect("client should build");
+    let definition = ToolDefinition {
+        name: "echo".to_string(),
+        description: Some("Echo the input back".to_string()),
+        input_schema: json!({ "type": "object" }),
+    };
+
+    let error = expect_error(
+        client
+            .request()
+            .tool_definition(definition)
+            .prompt("stream please")
+            .stream()
             .await
             .map(|_| "a stream"),
     );

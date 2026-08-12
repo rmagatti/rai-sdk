@@ -684,8 +684,10 @@ pub struct StructuredOutput<T> {
 
 /// A provider-agnostic tool definition sent to the model.
 ///
-/// Produced from a [`Tool`](crate::Tool) when a request is built; providers
-/// translate it into their own function/tool schema.
+/// Produced from a [`Tool`](crate::Tool) when a request is built, or constructed
+/// directly for handler-free proxy advertisement with
+/// [`RequestBuilder::tool_definition`](crate::RequestBuilder::tool_definition).
+/// Providers translate it into their own function/tool schema.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolDefinition {
     /// Tool name the model uses to call it.

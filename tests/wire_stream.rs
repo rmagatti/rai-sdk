@@ -410,8 +410,8 @@ mod openai {
     }
 
     #[tokio::test]
-    async fn a_tool_bearing_request_is_still_rejected_before_the_stream_opens() {
-        use rai_sdk::{Error, JsonSchema, Tool, ToolContext};
+    async fn a_tool_bearing_request_streams_and_advertises_the_tools() {
+        use rai_sdk::{JsonSchema, Tool, ToolContext};
         use serde::Deserialize;
 
         #[derive(Debug, Deserialize, JsonSchema)]
@@ -433,18 +433,18 @@ mod openai {
             .build()
             .expect("client should build");
 
-        let error = client
+        // The wire-events proxy path advertises tools without executing
+        // them, so a tool-bearing request streams instead of erroring (the
+        // in-process streaming methods keep rejecting — pinned in
+        // tests/streaming_tools.rs alongside the advertised-body assertions).
+        let events = client
             .request()
             .prompt("stream please")
             .stream_wire_events()
             .await
-            .map(|_| "a stream")
-            .expect_err("streaming with tools is not supported");
-
-        assert!(
-            matches!(error, Error::InvalidRequest(message) if message.contains("Streaming with tools")),
-            "the wire stream should follow the same tool rules as the other streaming methods"
-        );
+            .expect("wire events advertise registered tools without executing them");
+        let tags: Vec<&'static str> = events.map(|event| event.tag()).collect().await;
+        assert_eq!(tags.last(), Some(&"message_stop"));
     }
 }
 

@@ -82,7 +82,7 @@ Match non-exhaustively (`_ => {}`) so new event kinds do not break your code.
 
 ## Streaming and tools
 
-The streaming methods **reject** requests that carry tools, rather than silently ignoring them, with `Error::InvalidRequest`. Executing a tool loop requires sending follow-up requests, which is incompatible with handing you a single continuous stream.
+`stream()`, `generate_stream_events()`, and `stream_accumulated()` **reject** requests that carry tools, rather than silently ignoring them, with `Error::InvalidRequest`. Executing a tool loop requires sending follow-up requests, which is incompatible with handing you a single continuous stream.
 
 The check uses the request's *effective* tool set, so one client can do both. Opt out per request to stream:
 
@@ -112,6 +112,36 @@ let stream = client
 ```
 
 The rule applies in both directions: adding a tool with `.tool(..)` on a request makes it non-streamable even if the client has no tools, instead of quietly dropping it.
+
+`stream_wire_events()` is the intentional exception. It is the server-side proxy API: it advertises the effective tool definitions to the provider, forwards tool-call start/delta/end events to the remote client, and never runs handlers on the server. The remote client executes the call and sends its result in a later request. This lets a credential-holding proxy support tool-capable clients without owning their tool implementations.
+
+When the proxy has no local handler, register the provider-facing schema directly with `tool_definition()`:
+
+```rust,no_run
+use rai_sdk::ToolDefinition;
+
+# async fn run(client: &rai_sdk::Client<rai_sdk::client::ModelReady>) -> Result<(), Box<dyn std::error::Error>> {
+let events = client
+    .request()
+    .tool_definition(ToolDefinition {
+        name: "get_weather".into(),
+        description: Some("Get the weather for a city".into()),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": { "city": { "type": "string" } },
+            "required": ["city"],
+            "additionalProperties": false
+        }),
+    })
+    .prompt("What is the weather in Paris?")
+    .stream_wire_events()
+    .await?;
+# let _ = events;
+# Ok(())
+# }
+```
+
+Executable tools registered with `tool()` are also advertised by `stream_wire_events()`, but their handlers are deliberately not invoked on this path.
 
 If you need incremental output *and* tool execution in one exchange, drive the loop yourself with `generate_once()`, executing calls between turns.
 

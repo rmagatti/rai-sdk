@@ -148,9 +148,10 @@ impl OpenAIProvider {
         model: &OpenAIModel,
         prompt: &Prompt,
         config: &crate::generation::GenerationConfig,
+        tool_definitions: Option<&[ToolDefinition]>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<crate::provider::ProviderStreamEvent>> + Send>>>
     {
-        let request = self.build_request(model, prompt, config, true, None);
+        let request = self.build_request(model, prompt, config, true, tool_definitions);
         let url = format!("{}/chat/completions", self.base_url);
 
         debug!(url = %url, "Sending streaming request to OpenAI");

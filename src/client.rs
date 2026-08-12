@@ -12,7 +12,7 @@
 //! configuration, tools, and retry policy. The `_once` variants perform a single
 //! provider call and do not execute registered tools.
 
-use std::{any::type_name, marker::PhantomData, pin::Pin};
+use std::{any::type_name, collections::HashSet, marker::PhantomData, pin::Pin};
 
 use futures::{Stream, StreamExt};
 use schemars::JsonSchema;
@@ -37,12 +37,6 @@ use crate::provider::AnthropicProvider;
 
 #[cfg(feature = "openrouter")]
 use crate::provider::OpenRouterProvider;
-
-#[derive(Clone, Copy)]
-enum ToolAvailability {
-    Enabled,
-    IgnoredForStructuredOnce,
-}
 
 #[doc(hidden)]
 pub struct ModelMissing;
@@ -447,24 +441,27 @@ impl<ModelState> Client<ModelState> {
         config: &GenerationConfig,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<crate::provider::ProviderStreamEvent>> + Send>>>
     {
-        ensure_streamable(&self.tool_registry)?;
-        self.generate_stream_inner(model, prompt, config).await
+        ensure_streamable(&self.tool_registry, &[])?;
+        self.generate_stream_inner(model, prompt, config, None)
+            .await
     }
 
-    /// Open a provider stream without considering tools.
+    /// Open a provider stream with optional tool definitions.
     ///
-    /// Callers are responsible for having already rejected tool-bearing
-    /// requests via [`ensure_streamable`].
+    /// Callers are responsible for rejecting tool-bearing requests that cannot
+    /// support them. [`stream_wire_events`](RequestBuilder::stream_wire_events)
+    /// passes definitions through for its remote client to execute.
     #[instrument(skip(self, prompt, config))]
     async fn generate_stream_inner(
         &self,
         model: Model,
         prompt: &Prompt,
         config: &GenerationConfig,
+        tool_definitions: Option<&[ToolDefinition]>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<crate::provider::ProviderStreamEvent>> + Send>>>
     {
         #[cfg(not(any(feature = "openai", feature = "anthropic", feature = "openrouter")))]
-        let _ = (prompt, config);
+        let _ = (prompt, config, tool_definitions);
 
         match model {
             #[cfg(feature = "openai")]
@@ -473,7 +470,9 @@ impl<ModelState> Client<ModelState> {
                     .openai
                     .as_ref()
                     .ok_or_else(|| Error::ProviderNotConfigured(ProviderKind::OpenAI))?;
-                provider.generate_stream(openai_model, prompt, config).await
+                provider
+                    .generate_stream(openai_model, prompt, config, tool_definitions)
+                    .await
             }
 
             #[cfg(feature = "openai")]
@@ -483,7 +482,7 @@ impl<ModelState> Client<ModelState> {
                     .as_ref()
                     .ok_or_else(|| Error::ProviderNotConfigured(ProviderKind::OpenAICompatible))?;
                 provider
-                    .generate_stream(compatible_model, prompt, config)
+                    .generate_stream(compatible_model, prompt, config, tool_definitions)
                     .await
             }
 
@@ -494,7 +493,7 @@ impl<ModelState> Client<ModelState> {
                     .as_ref()
                     .ok_or_else(|| Error::ProviderNotConfigured(ProviderKind::Anthropic))?;
                 provider
-                    .generate_stream(anthropic_model, prompt, config)
+                    .generate_stream(anthropic_model, prompt, config, tool_definitions)
                     .await
             }
 
@@ -505,7 +504,7 @@ impl<ModelState> Client<ModelState> {
                     .as_ref()
                     .ok_or_else(|| Error::ProviderNotConfigured(ProviderKind::OpenRouter))?;
                 provider
-                    .generate_stream(openrouter_model, prompt, config)
+                    .generate_stream(openrouter_model, prompt, config, tool_definitions)
                     .await
             }
 
@@ -587,6 +586,7 @@ struct ResolvedRequest {
     config: GenerationConfig,
     retry_config: RetryConfig,
     tool_registry: ToolRegistry,
+    definition_only_tools: Vec<ToolDefinition>,
 }
 
 #[doc(hidden)]
@@ -612,6 +612,7 @@ pub struct PromptReady;
 /// | [`generate_with_history`](Self::generate_with_history) | [`Response`] | yes |
 /// | [`stream`](Self::stream) | stream of provider events | not supported |
 /// | [`generate_stream_events`](Self::generate_stream_events) | stream of high-level events | not supported |
+/// | [`stream_wire_events`](Self::stream_wire_events) | proxy-safe wire events | no, definitions are advertised |
 /// | [`stream_accumulated`](Self::stream_accumulated) | [`Response`] | not supported |
 ///
 /// Methods ending in `_once` make exactly one provider call and never execute
@@ -660,6 +661,7 @@ pub struct RequestBuilder<
     retry_config: Option<RetryConfig>,
     prompt: Option<Prompt>,
     tool_override: ToolOverride,
+    definition_only_tools: Vec<ToolDefinition>,
     prompt_state: PhantomData<PromptState>,
     model_state: PhantomData<RequestModelState>,
 }
@@ -673,6 +675,7 @@ impl<'a, ClientModelState> RequestBuilder<'a, PromptMissing, ClientModelState, C
             retry_config: None,
             prompt: None,
             tool_override: ToolOverride::Inherit,
+            definition_only_tools: Vec::new(),
             prompt_state: PhantomData,
             model_state: PhantomData,
         }
@@ -692,6 +695,7 @@ impl<'a, PromptState, RequestModelState, ClientModelState>
             retry_config: self.retry_config,
             prompt: self.prompt,
             tool_override: self.tool_override,
+            definition_only_tools: self.definition_only_tools,
             prompt_state: PhantomData,
             model_state: PhantomData,
         }
@@ -707,6 +711,7 @@ impl<'a, PromptState, RequestModelState, ClientModelState>
             retry_config: self.retry_config,
             prompt: self.prompt,
             tool_override: self.tool_override,
+            definition_only_tools: self.definition_only_tools,
             prompt_state: PhantomData,
             model_state: PhantomData,
         }
@@ -832,12 +837,37 @@ impl<'a, PromptState, RequestModelState, ClientModelState>
         self
     }
 
+    /// Advertise a handler-free tool definition to a proxy client.
+    ///
+    /// Definition-only tools are supported by [`stream_wire_events`](Self::stream_wire_events)
+    /// and [`generate_once`](Self::generate_once), neither of which executes
+    /// tools. Auto-executing methods and non-wire streams reject them;
+    /// [`generate_structured_once`](Self::generate_structured_once) ignores them
+    /// just as it ignores registered tools.
+    pub fn tool_definition(mut self, tool: ToolDefinition) -> Self {
+        self.definition_only_tools.push(tool);
+        self
+    }
+
+    /// Advertise multiple handler-free tool definitions to a proxy client.
+    ///
+    /// See [`tool_definition`](Self::tool_definition) for where definition-only
+    /// tools are supported.
+    pub fn tool_definitions<T>(mut self, tools: T) -> Self
+    where
+        T: IntoIterator<Item = ToolDefinition>,
+    {
+        self.definition_only_tools.extend(tools);
+        self
+    }
+
     /// Disable all tools for this request, including client defaults.
     ///
     /// Also the way to stream from a client that has tools registered, since the
     /// streaming methods reject any request carrying tools.
     pub fn no_tools(mut self) -> Self {
         self.tool_override = ToolOverride::None;
+        self.definition_only_tools.clear();
         self
     }
 }
@@ -882,6 +912,7 @@ impl<'a, PromptState, ClientModelState>
             config,
             retry_config,
             tool_registry,
+            definition_only_tools: self.definition_only_tools.clone(),
         })
     }
 }
@@ -940,6 +971,7 @@ impl<'a, ClientModelState> RequestBuilder<'a, PromptReady, ModelReady, ClientMod
     /// ```
     pub async fn generate(self) -> Result<Response> {
         let resolved = self.resolve()?;
+        ensure_executable_tools_only(&resolved.definition_only_tools)?;
         let prompt = self
             .prompt
             .as_ref()
@@ -996,7 +1028,7 @@ impl<'a, ClientModelState> RequestBuilder<'a, PromptReady, ModelReady, ClientMod
             .as_ref()
             .expect("prompt-ready request builder must contain a prompt");
         let tool_definitions =
-            request_tool_definitions(&resolved.tool_registry, ToolAvailability::Enabled);
+            effective_tool_definitions(&resolved.tool_registry, &resolved.definition_only_tools)?;
 
         crate::retry::with_retry(&resolved.retry_config, "generate_once", || {
             self.client.generate_once_internal(
@@ -1057,6 +1089,7 @@ impl<'a, ClientModelState> RequestBuilder<'a, PromptReady, ModelReady, ClientMod
         T: DeserializeOwned + JsonSchema,
     {
         let resolved = self.resolve()?;
+        ensure_executable_tools_only(&resolved.definition_only_tools)?;
         let prompt = self
             .prompt
             .as_ref()
@@ -1097,19 +1130,19 @@ impl<'a, ClientModelState> RequestBuilder<'a, PromptReady, ModelReady, ClientMod
             .as_ref()
             .expect("prompt-ready request builder must contain a prompt");
         let config = structured_config_for::<T>(&resolved.config)?;
-        let tool_definitions = request_tool_definitions(
-            &resolved.tool_registry,
-            ToolAvailability::IgnoredForStructuredOnce,
-        );
+        let ignored_tool_count =
+            resolved.tool_registry.definitions().len() + resolved.definition_only_tools.len();
+        if ignored_tool_count > 0 {
+            info!(
+                tool_count = ignored_tool_count,
+                "Ignoring configured tools for generate_structured_once; use generate_structured for tool loops"
+            );
+        }
 
         let response =
             crate::retry::with_retry(&resolved.retry_config, "generate_structured_once", || {
-                self.client.generate_once_internal(
-                    resolved.model.clone(),
-                    prompt,
-                    &config,
-                    tool_definitions.as_deref(),
-                )
+                self.client
+                    .generate_once_internal(resolved.model.clone(), prompt, &config, None)
             })
             .await?;
 
@@ -1131,6 +1164,7 @@ impl<'a, ClientModelState> RequestBuilder<'a, PromptReady, ModelReady, ClientMod
         history: &[crate::message::ConversationTurn],
     ) -> Result<Response> {
         let resolved = self.resolve()?;
+        ensure_executable_tools_only(&resolved.definition_only_tools)?;
         let prompt = self
             .prompt
             .as_ref()
@@ -1184,11 +1218,15 @@ impl<'a, ClientModelState> RequestBuilder<'a, PromptReady, ModelReady, ClientMod
             .as_ref()
             .expect("prompt-ready request builder must contain a prompt");
 
-        ensure_streamable(&resolved.tool_registry)?;
+        ensure_streamable(&resolved.tool_registry, &resolved.definition_only_tools)?;
 
         let mut stream = crate::retry::with_retry(&resolved.retry_config, "stream", || {
-            self.client
-                .generate_stream_inner(resolved.model.clone(), prompt, &resolved.config)
+            self.client.generate_stream_inner(
+                resolved.model.clone(),
+                prompt,
+                &resolved.config,
+                None,
+            )
         })
         .await?;
 
@@ -1307,8 +1345,9 @@ impl<'a, ClientModelState> RequestBuilder<'a, PromptReady, ModelReady, ClientMod
     /// [`ToolCallEnd`](crate::wire::WireStreamEvent::ToolCallEnd). A client that
     /// only wants finished calls can ignore the first two.
     ///
-    /// Registered tools are *not* executed, exactly as with
-    /// [`generate_stream_events`](Self::generate_stream_events).
+    /// Registered and definition-only tools are advertised to the provider but
+    /// are *not* executed. Tool calls flow through the returned stream so the
+    /// proxy's client can execute them and send the results in a later request.
     ///
     /// # Cancellation
     ///
@@ -1320,10 +1359,10 @@ impl<'a, ClientModelState> RequestBuilder<'a, PromptReady, ModelReady, ClientMod
     /// # Errors
     ///
     /// The returned `Result` covers only failures that happen before the stream
-    /// opens: the same causes as [`stream`](Self::stream), including
-    /// [`Error::InvalidRequest`] when the request's effective tool set is
-    /// non-empty. A server that wants its client to see those too can forward
-    /// them with
+    /// opens, such as provider configuration, transport, or invalid tool
+    /// definitions. Unlike the other streaming methods, a non-empty effective
+    /// tool set is supported. A server that wants its client to see opening
+    /// failures too can forward them with
     /// [`WireStreamEvent::error`](crate::wire::WireStreamEvent::error).
     ///
     /// # Examples
@@ -1358,14 +1397,19 @@ impl<'a, ClientModelState> RequestBuilder<'a, PromptReady, ModelReady, ClientMod
             .as_ref()
             .expect("prompt-ready request builder must contain a prompt");
 
-        ensure_streamable(&resolved.tool_registry)?;
+        let tool_definitions =
+            effective_tool_definitions(&resolved.tool_registry, &resolved.definition_only_tools)?;
 
         let model_str = resolved.model.as_str().to_string();
         let provider = resolved.model.provider();
 
         let mut stream = crate::retry::with_retry(&resolved.retry_config, "stream", || {
-            self.client
-                .generate_stream_inner(resolved.model.clone(), prompt, &resolved.config)
+            self.client.generate_stream_inner(
+                resolved.model.clone(),
+                prompt,
+                &resolved.config,
+                tool_definitions.as_deref(),
+            )
         })
         .await?;
 
@@ -1541,11 +1585,15 @@ impl<'a, ClientModelState> RequestBuilder<'a, PromptReady, ModelReady, ClientMod
             .as_ref()
             .expect("prompt-ready request builder must contain a prompt");
 
-        ensure_streamable(&resolved.tool_registry)?;
+        ensure_streamable(&resolved.tool_registry, &resolved.definition_only_tools)?;
 
         crate::retry::with_retry(&resolved.retry_config, "stream", || {
-            self.client
-                .generate_stream_inner(resolved.model.clone(), prompt, &resolved.config)
+            self.client.generate_stream_inner(
+                resolved.model.clone(),
+                prompt,
+                &resolved.config,
+                None,
+            )
         })
         .await
     }
@@ -1596,14 +1644,18 @@ impl<'a, ClientModelState> RequestBuilder<'a, PromptReady, ModelReady, ClientMod
             .as_ref()
             .expect("prompt-ready request builder must contain a prompt");
 
-        ensure_streamable(&resolved.tool_registry)?;
+        ensure_streamable(&resolved.tool_registry, &resolved.definition_only_tools)?;
 
         let model_str = resolved.model.as_str().to_string();
         let provider = resolved.model.provider();
 
         let mut stream = crate::retry::with_retry(&resolved.retry_config, "stream", || {
-            self.client
-                .generate_stream_inner(resolved.model.clone(), prompt, &resolved.config)
+            self.client.generate_stream_inner(
+                resolved.model.clone(),
+                prompt,
+                &resolved.config,
+                None,
+            )
         })
         .await?;
 
@@ -1647,8 +1699,11 @@ impl<'a, ClientModelState> RequestBuilder<'a, PromptReady, ModelReady, ClientMod
 /// Streaming has no way to execute a tool loop, since that requires issuing
 /// follow-up requests. Failing loudly is better than quietly dropping tools the
 /// caller registered.
-fn ensure_streamable(tool_registry: &ToolRegistry) -> Result<()> {
-    if tool_registry.is_empty() {
+fn ensure_streamable(
+    tool_registry: &ToolRegistry,
+    definition_only_tools: &[ToolDefinition],
+) -> Result<()> {
+    if tool_registry.is_empty() && definition_only_tools.is_empty() {
         return Ok(());
     }
 
@@ -1659,24 +1714,45 @@ fn ensure_streamable(tool_registry: &ToolRegistry) -> Result<()> {
     ))
 }
 
-fn request_tool_definitions(
-    tool_registry: &ToolRegistry,
-    availability: ToolAvailability,
-) -> Option<Vec<ToolDefinition>> {
-    if tool_registry.is_empty() {
-        return None;
+fn ensure_executable_tools_only(definition_only_tools: &[ToolDefinition]) -> Result<()> {
+    if definition_only_tools.is_empty() {
+        return Ok(());
     }
 
-    match availability {
-        ToolAvailability::Enabled => Some(tool_registry.definitions()),
-        ToolAvailability::IgnoredForStructuredOnce => {
-            info!(
-                tool_count = tool_registry.definitions().len(),
-                "Ignoring configured tools for generate_structured_once; use generate_structured for tool loops"
-            );
-            None
+    Err(Error::InvalidRequest(
+        "Definition-only tools cannot be auto-executed. Use generate_once() or \
+         stream_wire_events(), or register Tool values with handlers."
+            .into(),
+    ))
+}
+
+fn effective_tool_definitions(
+    tool_registry: &ToolRegistry,
+    definition_only_tools: &[ToolDefinition],
+) -> Result<Option<Vec<ToolDefinition>>> {
+    let mut definitions = tool_registry.definitions();
+    definitions.extend_from_slice(definition_only_tools);
+
+    if definitions.is_empty() {
+        return Ok(None);
+    }
+
+    let mut names = HashSet::new();
+    for definition in &definitions {
+        if definition.name.trim().is_empty() {
+            return Err(Error::InvalidRequest(
+                "Tool name cannot be empty".to_string(),
+            ));
+        }
+        if !names.insert(&definition.name) {
+            return Err(Error::InvalidRequest(format!(
+                "Tool '{}' is already registered",
+                definition.name
+            )));
         }
     }
+
+    Ok(Some(definitions))
 }
 
 fn structured_config_for<T>(config: &GenerationConfig) -> Result<GenerationConfig>
