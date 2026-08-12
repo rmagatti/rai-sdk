@@ -219,14 +219,13 @@ impl OpenAICompatibleProvider {
         model: &OpenAICompatibleModel,
         prompt: &Prompt,
         config: &crate::generation::GenerationConfig,
+        tool_definitions: Option<&[ToolDefinition]>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<crate::provider::ProviderStreamEvent>> + Send>>>
     {
-        // Streaming never advertises tools — the crate rejects tool-bearing
-        // streaming requests earlier — but `response_format` still rides along.
-        let requested = RequestedCapabilities::of(config, None);
+        let requested = RequestedCapabilities::of(config, tool_definitions);
         self.check_declared_capabilities(requested)?;
 
-        let request = self.build_request(model, prompt, config, true, None);
+        let request = self.build_request(model, prompt, config, true, tool_definitions);
         let url = self.chat_completions_url();
 
         debug!(url = %url, "Sending streaming request to the OpenAI-compatible endpoint");

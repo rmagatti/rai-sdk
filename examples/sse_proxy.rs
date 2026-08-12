@@ -53,7 +53,7 @@ use axum::routing::post;
 use futures::{Stream, StreamExt};
 use rai_sdk::client::ModelReady;
 use rai_sdk::wire::{StreamAccumulator, WireStreamEvent};
-use rai_sdk::{Client, ClientBuilder, Model};
+use rai_sdk::{Client, ClientBuilder, Model, ToolDefinition};
 
 // ── Server ─────────────────────────────────────────────────────────────────
 
@@ -67,7 +67,18 @@ async fn generate(
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let events = match client
         .request()
-        .no_tools()
+        // The browser owns this tool. The proxy advertises its schema so tool
+        // calls stream back over WireStreamEvent for the browser to execute.
+        .tool_definition(ToolDefinition {
+            name: "display_notification".to_string(),
+            description: Some("Display a notification in the browser".to_string()),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": { "message": { "type": "string" } },
+                "required": ["message"],
+                "additionalProperties": false
+            }),
+        })
         .prompt(prompt)
         .stream_wire_events()
         .await
