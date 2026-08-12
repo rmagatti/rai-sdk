@@ -11,6 +11,13 @@ the public API. Breaking changes are always called out below.
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/rmagatti/rai-sdk/compare/v0.2.1...v0.3.0) - 2026-08-12
+
+### Added
+
+- *(anthropic)* opt-in prompt caching via GenerationConfig::with_prompt_caching ([#11](https://github.com/rmagatti/rai-sdk/pull/11))
+- *(stream)* advertise tool definitions on the wire-events path ([#12](https://github.com/rmagatti/rai-sdk/pull/12))
+
 ## [0.2.1](https://github.com/rmagatti/rai-sdk/compare/v0.2.0...v0.2.1) - 2026-08-11
 
 ### Fixed
