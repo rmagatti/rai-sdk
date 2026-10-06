@@ -165,7 +165,7 @@ pub use message::{
 pub use model::{AnthropicModel, Model, OpenAICompatibleModel, OpenAIModel, OpenRouterModel};
 pub use retry::RetryConfig;
 pub use schemars::{self, JsonSchema};
-pub use tool::{Tool, ToolContext};
+pub use tool::{Tool, ToolContext, ToolOutput};
 pub use wire::{
     StreamAccumulator, WIRE_PROTOCOL_VERSION, WireError, WireErrorKind, WireStreamEvent,
 };
