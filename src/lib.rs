@@ -19,6 +19,9 @@
 //! - **Tool calling** — register typed async tools with [`Tool`];
 //!   [`RequestBuilder::generate`] runs the tool loop, feeding results back until
 //!   the model produces a final answer.
+//! - **MCP tools** — with the `mcp` feature, the `mcp` module registers a
+//!   Model Context Protocol server's whole tool catalog and executes its calls
+//!   through one generic path.
 //! - **Streaming** — consume raw provider events, or use
 //!   [`RequestBuilder::stream_accumulated`] to stream internally and return a
 //!   complete [`Response`].
@@ -136,6 +139,8 @@ mod guide {
     chapter!(ProvidersAndModels, "../docs/src/providers-and-models.md");
     chapter!(StructuredOutput, "../docs/src/structured-output.md");
     chapter!(ToolCalling, "../docs/src/tool-calling.md");
+    #[cfg(feature = "mcp")]
+    chapter!(McpTools, "../docs/src/mcp.md");
     chapter!(Streaming, "../docs/src/streaming.md");
     chapter!(MultimodalPrompts, "../docs/src/multimodal-prompts.md");
     chapter!(RetriesAndErrors, "../docs/src/retries-and-errors.md");
@@ -147,6 +152,8 @@ pub mod client;
 pub mod config;
 pub mod error;
 pub mod generation;
+#[cfg(feature = "mcp")]
+pub mod mcp;
 pub mod message;
 pub mod model;
 pub mod provider;

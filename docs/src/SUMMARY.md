@@ -8,6 +8,7 @@
 - [Providers and models](./providers-and-models.md)
 - [Structured output](./structured-output.md)
 - [Tool calling](./tool-calling.md)
+- [MCP tools](./mcp.md)
 - [Streaming](./streaming.md)
 - [Multimodal prompts](./multimodal-prompts.md)
 - [Retries and error handling](./retries-and-errors.md)

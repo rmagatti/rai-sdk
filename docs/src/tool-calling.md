@@ -166,6 +166,8 @@ let lookup = Tool::from_definition(
 # let _ = lookup;
 ```
 
+For tools served by an MCP server, the [MCP tools](./mcp.md) chapter builds these for a whole catalog.
+
 ## Per-request tools
 
 Tools can be registered on the client (shared by every request) or per request:
