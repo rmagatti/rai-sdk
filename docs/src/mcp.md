@@ -107,7 +107,9 @@ Use `rename` to combine several servers without collisions or to keep names an e
 
 ## Credentials and isolation
 
-`McpTools` holds only the session it was read from and that session's catalog. Authentication belongs to the transport. When a server authorizes each caller, connect a session with that caller's credentials, build an `McpTools` from it, and attach it to that caller's requests with `.tools(..)` or `.tool_definitions(..)`. Nothing is global, and catalogs are never shared between values, so one caller's session is never used for another's calls. `from_catalog` binds a catalog you have already fetched (and cached, per server and caller) to a new session without listing tools again.
+`McpTools` binds a tool catalog to a client session. Authentication belongs to the transport. When a server authorizes each caller, connect a session with that caller's credentials, build an `McpTools` from it, and attach it to that caller's requests with `.tools(..)` or `.tool_definitions(..)`. Clones share both the session and catalog. The application must keep the original value, its clones, and the generated tools scoped to the same authenticated caller or credential context. The adapter has no global cache and does not enforce caller identity.
+
+Call `discover` each turn to refresh the catalog, or discover once and reuse the value or its clones across turns for the same credential context. `from_catalog` binds an already-fetched catalog to a session without listing tools again. Applications that cache catalogs must key them by the server and applicable caller or credential context, and bind them to a session authenticated for that context. Cache lifetimes, eviction, reconnects and refreshes after tool-list notifications are application-owned.
 
 ## Cancellation
 

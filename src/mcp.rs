@@ -41,8 +41,11 @@
 //! reached through a peer built with that caller's credentials, and the
 //! resulting [`McpTools`] attached to that caller's requests only (for example
 //! with [`RequestBuilder::tool_definitions`](crate::RequestBuilder::tool_definitions)
-//! or [`RequestBuilder::tools`](crate::RequestBuilder::tools)). Nothing in this
-//! module is global, and no catalog is shared between values.
+//! or [`RequestBuilder::tools`](crate::RequestBuilder::tools)). Cloning shares
+//! both the peer and catalog. The application must keep the original value,
+//! its clones, and the tools built from them scoped to the same authenticated
+//! caller or credential context. This module has no global cache and does not
+//! enforce caller identity.
 //!
 //! # Cancellation
 //!
@@ -233,9 +236,9 @@ struct McpTool {
     remote: rmcp::model::Tool,
 }
 
-/// An MCP server's tool catalog bound to the session it was read from.
+/// An MCP server's tool catalog bound to a client session.
 ///
-/// Cheap to clone: clones share the underlying [`Peer`]. See the
+/// Cheap to clone: clones share the underlying [`Peer`] and catalog. See the
 /// [module documentation](self) for result, error, credential and cancellation
 /// semantics.
 #[derive(Clone)]
@@ -291,7 +294,9 @@ impl McpTools {
     /// Bind an already-fetched catalog to `peer`.
     ///
     /// Use this to reuse a catalog the application has cached for the same
-    /// server and caller. Fails if a tool name is empty or repeated.
+    /// server and caller or credential context. The application must ensure the
+    /// catalog matches the peer's authorization context; this method does not
+    /// verify that association. Fails if a tool name is empty or repeated.
     pub fn from_catalog<I>(peer: Peer<RoleClient>, tools: I) -> Result<Self, McpError>
     where
         I: IntoIterator<Item = rmcp::model::Tool>,
