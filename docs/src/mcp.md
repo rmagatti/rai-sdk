@@ -33,7 +33,7 @@ println!("{}", response.text());
 # }
 ```
 
-`discover` follows pagination and rejects a server that repeats a cursor. It has no deadline of its own, so wrap it in your application's timeout. To cap how much of a catalog is read, page it yourself with `Peer::list_tools` and bind the result with `McpTools::from_catalog`.
+`discover` follows pagination and rejects a server that repeats a cursor. It has no deadline of its own, so wrap it in your application's timeout. To cap how much of a catalog is read, page it yourself with `rai_sdk::mcp::list_tools` and bind the result with `McpTools::from_catalog`.
 
 Each tool is advertised with the server's own name, description and `inputSchema`. The schema is passed through unchanged. Schemas generated from Rust types are normalized for strict providers, but MCP schemas are not, and arguments are not validated locally because the server validates its own input.
 
@@ -89,6 +89,36 @@ The same definitions work with `stream_wire_events`, which advertises tools and 
 
 A domain failure reported by the tool is a message for the model. A failure to reach or speak to the server is an error for the application, which decides whether to retry, tell the model, or end the turn. Inside `generate()`, both are reported to the model as tool errors, like any other tool handler failure.
 
+## Structured results and output validation
+
+`McpTools::call_result` and `call_result_until` return the original `CallToolResult`, including content blocks, `structuredContent`, `_meta` and `isError`. Use them when a UI needs typed JSON or non-text content alongside the model's message. `call` and `call_until` use the same execution path, then convert the result to a `Message`.
+
+```rust,no_run
+# use rai_sdk::{ToolCall, mcp::{McpTools, RequestOptions}};
+# async fn run(catalog: &McpTools, call: &ToolCall) -> Result<(), Box<dyn std::error::Error>> {
+let result = catalog.call_result(
+    call,
+    RequestOptions::with_timeout(std::time::Duration::from_secs(10)),
+).await?;
+// `result.structured_content` remains a JSON value; no message re-parsing is needed.
+# Ok(())
+# }
+```
+
+All catalog call paths validate successful `structuredContent` against a tool's declared `outputSchema`. A missing or non-matching value returns `McpError::OutputSchemaViolation`; `isError` results skip validation. This also applies to the existing `call`, `call_until` and `tools()` paths. Tools with no output schema retain their previous behavior.
+
+Compilation is lazy and cached per tool, including failed compilations. An invalid schema prevents that tool from being dispatched and leaves other tools usable. Compilation continues independently when its first caller cancels or reaches its deadline, so a later caller can reuse the work. Clones and filtered catalogs share that cache; renaming creates new schema keys.
+
+`SchemaProcessor` bounds compilation and validation on blocking workers (four by default). Share a cloned processor across catalogs with `with_schema_processor` to apply one limit across sessions. A deadline ends the caller's wait; blocking work already running keeps its permit until completion. External HTTP and file schema references are always refused. Diagnostics include bounded schema information, never result values.
+
+## Applications with their own catalog
+
+The free `list_tools` and `call_tool` functions accept a connected `Peer` and typed MCP parameters. They retain no catalog, impose no authorization policy and return typed MCP results unchanged. This lets an application enforce its own page, byte and tool limits without keeping a second catalog solely for execution.
+
+Use `SchemaProcessor::compile` once for the retained output schemas and `validate` on returned results. This explicit path uses the same validator as `McpTools`. Batch compilation reports any invalid declaration in the supplied batch; applications can compile individual tools to isolate failures. Transport body limits, catalog size limits, credentials, authorization and cache lifetimes remain application-owned.
+
+`RequestOptions::with_timeout` sets one hard budget covering queue wait and response. For catalog calls it also covers the wait for compilation and result validation. Progress notifications do not extend it. A zero timeout does not dispatch; an unrepresentably large timeout is treated as unbounded. `call_tool_until` additionally accepts a cancellation future. Input-required rounds and task handles remain unsupported.
+
 ## Names
 
 `filter` keeps a subset of the catalog and `rename` changes the names advertised to the model. Calls still go to the server under each tool's own name:
@@ -131,10 +161,10 @@ catalog
 # }
 ```
 
-If the future completes first, the call returns `McpError::Cancelled` straight away. Cancellation is checked before the call is dispatched, so a caller that is already cancelled never sends it. A call that was already sent is cancelled on the server with `notifications/cancelled`, delivered from a background task so a stalled session cannot delay the return. MCP cancellation is advisory. The server may already have finished, or may finish anyway, so a cancelled call to a tool with side effects may still have taken effect. Dropping a `call` future stops waiting without notifying the server.
+If the future completes first, the call returns `McpError::Cancelled` straight away. Cancellation is checked before the call is dispatched, so a caller that is already cancelled never sends it. A call that was already sent is cancelled on the server with `notifications/cancelled`, delivered from a background task so a stalled session cannot delay the return. MCP cancellation is advisory. The server may already have finished, or may finish anyway, so a cancelled call to a tool with side effects may still have taken effect. Dropping a dispatched call future also sends cancellation asynchronously. Completed responses and protocol errors do not send cancellation.
 
 ## Limitations
 
 - Results that need further client interaction (`input_required` rounds or task handles) return `McpError::UnsupportedResponse`.
-- Image and audio results are not forwarded. Providers do not accept them as tool-result content through this SDK's message model.
+- The model-facing methods cannot forward image or audio tool results. The result-preserving methods return those blocks unchanged.
 - `tools()` and `definitions()` reflect the catalog at the time it was read. Read it again to pick up a server's `tools/list_changed`.
