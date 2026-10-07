@@ -11,6 +11,12 @@ the public API. Breaking changes are always called out below.
 
 ## [Unreleased]
 
+## [0.3.2](https://github.com/rmagatti/rai-sdk/compare/v0.3.1...v0.3.2) - 2026-10-07
+
+### Added
+
+- *(mcp)* preserve tool results and validate structured output ([#20](https://github.com/rmagatti/rai-sdk/pull/20))
+
 ## [0.3.1](https://github.com/rmagatti/rai-sdk/compare/v0.3.0...v0.3.1) - 2026-10-07
 
 ### Added
