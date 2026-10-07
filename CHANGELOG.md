@@ -11,6 +11,12 @@ the public API. Breaking changes are always called out below.
 
 ## [Unreleased]
 
+## [0.3.1](https://github.com/rmagatti/rai-sdk/compare/v0.3.0...v0.3.1) - 2026-10-07
+
+### Added
+
+- *(mcp)* register MCP server tool catalogs ([#18](https://github.com/rmagatti/rai-sdk/pull/18))
+
 ## [0.3.0](https://github.com/rmagatti/rai-sdk/compare/v0.2.1...v0.3.0) - 2026-08-12
 
 ### Added
