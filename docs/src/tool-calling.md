@@ -137,6 +137,37 @@ struct SearchArgs {
 
 Errors returned by your handler are also surfaced to the model as tool-error content rather than aborting generation. Return an error when a call genuinely cannot be satisfied and you want the model to react to that fact.
 
+## Tools with an existing schema
+
+When a tool's schema comes from somewhere other than a Rust type (a remote catalog, a plugin manifest, a schema loaded at runtime), build it with `Tool::from_definition`. The definition is advertised exactly as given, with no normalization. The handler receives the raw JSON arguments, and validating them is up to the handler or the schema's owner. The handler returns a `ToolOutput`, which is sent verbatim and can mark a domain failure as a tool error:
+
+```rust
+use rai_sdk::{Tool, ToolDefinition, ToolOutput};
+use serde_json::json;
+
+let lookup = Tool::from_definition(
+    ToolDefinition {
+        name: "lookup".to_string(),
+        description: Some("Look up a symbol".to_string()),
+        input_schema: json!({
+            "type": "object",
+            "properties": { "symbol": { "type": "string" } },
+            "required": ["symbol"]
+        }),
+    },
+    |args, _ctx| async move {
+        match args["symbol"].as_str() {
+            Some("AAPL") => Ok(ToolOutput::success("AAPL: 227.50")),
+            Some(symbol) => Ok(ToolOutput::error(format!("unknown symbol {symbol}"))),
+            None => Ok(ToolOutput::error("`symbol` is required")),
+        }
+    },
+);
+# let _ = lookup;
+```
+
+For tools served by an MCP server, the [MCP tools](./mcp.md) chapter builds these for a whole catalog.
+
 ## Per-request tools
 
 Tools can be registered on the client (shared by every request) or per request:

@@ -71,6 +71,9 @@ jsonschema = { version = "0.49", default-features = false }
 # Retry jitter
 rand = "0.10"
 
+# MCP client types and session (the `mcp` feature).
+rmcp = { version = "3.5", optional = true, default-features = false, features = ["client"] }
+
 [dev-dependencies]
 tokio-test = "0.4"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -80,6 +83,8 @@ serial_test = "4"
 # The HTTP server in `examples/sse_proxy.rs`, which demonstrates re-emitting
 # rai-sdk stream events over SSE. Not used by the crate itself.
 axum = "0.8"
+# In-process MCP server for the `mcp` feature's integration tests.
+rmcp = { version = "3.5", default-features = false, features = ["client", "server"] }
 
 # The SSE proxy example drives a real provider through an axum handler, so it
 # needs a provider compiled in. Naming it here keeps a providerless
@@ -117,6 +122,13 @@ openrouter = []
 # OpenSSL on Linux), which avoids that build requirement.
 rustls-tls = ["reqwest/rustls"]
 native-tls = ["reqwest/native-tls"]
+
+# Tools served by Model Context Protocol servers (`rai_sdk::mcp`), built on the
+# official `rmcp` SDK. Only its client role is enabled: no transport, TLS, or
+# auth stack is pulled in, so the application connects with whichever
+# transport and credentials it already uses. Requires Rust 1.88, rmcp's
+# minimum; the rest of the crate keeps the `rust-version` above.
+mcp = ["dep:rmcp"]
 
 [lints.rust]
 missing_docs = "warn"

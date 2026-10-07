@@ -185,8 +185,20 @@ jobs:
         with:
           key: msrv-${{ steps.msrv.outputs.version }}
 
+      # Every feature except `mcp`, which depends on rmcp and so has rmcp's
+      # higher minimum (checked in the next step).
       - name: cargo check
-        run: cargo check --all-features --locked
+        run: cargo check --locked --features openai,anthropic,openrouter,rustls-tls,native-tls
+
+      # The `mcp` feature's minimum, documented next to the feature in
+      # Cargo.toml: rmcp 3 declares rust-version 1.88.
+      - name: Install Rust 1.88 (mcp feature)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.88"
+
+      - name: cargo check (mcp feature)
+        run: cargo +1.88 check --all-features --locked
 
   package:
     name: Package

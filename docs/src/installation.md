@@ -36,6 +36,8 @@ You do not need to depend on `schemars` separately. The SDK re-exports it as `ra
 
 The MSRV is declared as `rust-version` in `Cargo.toml` and verified in CI, so it will not drift silently. Treat an MSRV increase as a breaking change.
 
+The optional `mcp` feature requires **Rust 1.88**, the minimum of the `rmcp` crate it is built on. Enabling it on an older toolchain fails at build time with Cargo's `rust-version` error. Without the feature, `rmcp` is not in the dependency tree and 1.86 is enough.
+
 ## Feature flags
 
 | Feature | Default | Enables |
@@ -45,6 +47,7 @@ The MSRV is declared as `rust-version` in `Cargo.toml` and verified in CI, so it
 | `openrouter` | yes | OpenRouter |
 | `rustls-tls` | yes | TLS via rustls |
 | `native-tls` | no | TLS via the platform stack |
+| `mcp` | no | [MCP tools](./mcp.md); requires Rust 1.88 |
 
 To compile only one provider, turn the defaults off — but remember that the TLS
 backend is part of the default set, so you must name one:

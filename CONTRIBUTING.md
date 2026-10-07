@@ -150,7 +150,7 @@ few surprises:
 | `clippy` | `cargo clippy --all-targets --all-features --locked -- -D warnings` |
 | `test` | `cargo test --locked <features> --all-targets` then `cargo test --locked <features> --doc` |
 | `docs` | `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features --locked` |
-| `msrv` | `cargo check --all-features --locked` on the toolchain declared as `rust-version` |
+| `msrv` | `cargo check --locked` with every feature except `mcp` on the toolchain declared as `rust-version`, then `cargo check --all-features --locked` on 1.88, the `mcp` feature's minimum |
 | `package` | `cargo package --list --locked` then `cargo publish --dry-run --locked` |
 
 The `test` job runs on `ubuntu-latest` across `--all-features`, a providerless

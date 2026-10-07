@@ -21,7 +21,7 @@ use crate::{
     message::{Message, ToolCall, ToolDefinition},
 };
 
-type ToolFuture = Pin<Box<dyn Future<Output = Result<serde_json::Value>> + Send>>;
+type ToolFuture = Pin<Box<dyn Future<Output = Result<ToolOutput>> + Send>>;
 type ToolHandler = dyn Fn(serde_json::Value, ToolContext) -> ToolFuture + Send + Sync;
 
 fn format_instance_path(path: impl ToString) -> String {
@@ -87,6 +87,77 @@ fn tool_error_content(error: Error) -> Result<String> {
         .map_err(Into::into),
         error => serde_json::to_string(&serde_json::json!({ "error": error.to_string() }))
             .map_err(Into::into),
+    }
+}
+
+/// The model-visible result of one tool call, as produced by a
+/// [`Tool::from_definition`] handler.
+///
+/// Typed handlers registered with [`Tool::handler`] serialize their output to
+/// JSON and report failures through `Err`. A tool whose result is already text,
+/// or whose owner reports domain failures as data (an MCP `isError` result, for
+/// example), returns a `ToolOutput` instead, which keeps the content verbatim
+/// and carries the error flag through to [`Message::tool_error`].
+///
+/// # Example
+///
+/// ```rust
+/// use rai_sdk::ToolOutput;
+///
+/// let ok = ToolOutput::success("42 rows");
+/// assert!(!ok.is_error());
+///
+/// let failed = ToolOutput::error("symbol not found");
+/// let message = failed.into_message("call_1");
+/// assert!(message.tool_error);
+/// assert_eq!(message.content, "symbol not found");
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolOutput {
+    content: String,
+    is_error: bool,
+}
+
+impl ToolOutput {
+    /// A successful result whose content is sent to the model verbatim.
+    pub fn success(content: impl Into<String>) -> Self {
+        Self {
+            content: content.into(),
+            is_error: false,
+        }
+    }
+
+    /// A failed result. The content is sent to the model verbatim and the
+    /// resulting message is marked as a tool error.
+    pub fn error(content: impl Into<String>) -> Self {
+        Self {
+            content: content.into(),
+            is_error: true,
+        }
+    }
+
+    /// A successful result holding `value` serialized as JSON.
+    pub fn json<T: Serialize + ?Sized>(value: &T) -> Result<Self> {
+        Ok(Self::success(serde_json::to_string(value)?))
+    }
+
+    /// The content sent to the model.
+    pub fn content(&self) -> &str {
+        &self.content
+    }
+
+    /// Whether this result reports a failure.
+    pub fn is_error(&self) -> bool {
+        self.is_error
+    }
+
+    /// Convert into the tool-result [`Message`] answering `tool_call_id`.
+    pub fn into_message(self, tool_call_id: impl Into<String>) -> Message {
+        if self.is_error {
+            Message::tool_error(self.content, tool_call_id)
+        } else {
+            Message::tool(self.content, tool_call_id)
+        }
     }
 }
 
@@ -241,12 +312,65 @@ impl Tool {
             };
 
             Box::pin(async move {
-                let output = future.await?;
-                serde_json::to_value(output).map_err(Into::into)
+                let output = serde_json::to_value(future.await?)?;
+                ToolOutput::json(&output)
             })
         }));
 
         Ok(self)
+    }
+
+    /// Build a tool from an existing definition and an untyped handler.
+    ///
+    /// This is the constructor for tools whose schema is owned elsewhere: a
+    /// remote catalog such as an MCP server, a plugin manifest, or a schema
+    /// loaded at runtime. Unlike [`handler`](Self::handler), it does not
+    /// generate, normalize, or validate anything:
+    ///
+    /// - the definition's `input_schema` is advertised to the provider exactly
+    ///   as given, so the owner's schema reaches the model unchanged;
+    /// - arguments reach the handler as the raw JSON the model produced, and
+    ///   validating them is the handler's (or the schema owner's) job;
+    /// - the handler returns a [`ToolOutput`], so it can send text verbatim and
+    ///   report a domain failure as a tool error the model can react to.
+    ///
+    /// An `Err` from the handler is reported to the model as a tool error, as
+    /// with [`handler`](Self::handler).
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use rai_sdk::{Tool, ToolDefinition, ToolOutput};
+    /// use serde_json::json;
+    ///
+    /// let definition = ToolDefinition {
+    ///     name: "lookup".to_string(),
+    ///     description: Some("Look up a symbol".to_string()),
+    ///     input_schema: json!({
+    ///         "type": "object",
+    ///         "properties": { "symbol": { "type": "string" } },
+    ///         "required": ["symbol"]
+    ///     }),
+    /// };
+    ///
+    /// let _tool = Tool::from_definition(definition, |args, _ctx| async move {
+    ///     match args.get("symbol").and_then(|symbol| symbol.as_str()) {
+    ///         Some(symbol) => Ok(ToolOutput::success(format!("{symbol}: found"))),
+    ///         None => Ok(ToolOutput::error("`symbol` is required")),
+    ///     }
+    /// });
+    /// ```
+    pub fn from_definition<F, Fut>(definition: ToolDefinition, handler: F) -> Self
+    where
+        F: Fn(serde_json::Value, ToolContext) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<ToolOutput>> + Send + 'static,
+    {
+        Self {
+            name: definition.name,
+            description: definition.description,
+            input_schema: Some(definition.input_schema),
+            handler: Some(Arc::new(move |value, ctx| Box::pin(handler(value, ctx)))),
+        }
     }
 
     fn into_registered(self) -> Result<RegisteredTool> {
@@ -348,10 +472,7 @@ impl ToolRegistry {
             })?;
 
         match (registered.handler)(tool_call.arguments.clone(), context).await {
-            Ok(result) => Ok(Message::tool(
-                serde_json::to_string(&result)?,
-                tool_call.id.clone(),
-            )),
+            Ok(output) => Ok(output.into_message(tool_call.id.clone())),
             Err(error) => Ok(Message::tool_error(
                 tool_error_content(error)?,
                 tool_call.id.clone(),
@@ -593,5 +714,121 @@ mod tests {
             serde_json::Value::Bool(false)
         );
         assert!(schema.get("properties").is_some());
+    }
+
+    fn raw_definition() -> ToolDefinition {
+        ToolDefinition {
+            name: "lookup".to_string(),
+            description: Some("Look up a symbol".to_string()),
+            input_schema: serde_json::json!({
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": { "symbol": { "type": "string" } }
+            }),
+        }
+    }
+
+    #[test]
+    fn from_definition_keeps_the_schema_verbatim() {
+        let mut registry = ToolRegistry::new();
+        registry
+            .register(Tool::from_definition(
+                raw_definition(),
+                |_args, _ctx| async { Ok(ToolOutput::success("ok")) },
+            ))
+            .expect("tool should register");
+
+        assert_eq!(registry.definitions(), vec![raw_definition()]);
+    }
+
+    #[tokio::test]
+    async fn from_definition_passes_raw_arguments_and_returns_content_verbatim() {
+        let mut registry = ToolRegistry::new();
+        registry
+            .register(Tool::from_definition(
+                raw_definition(),
+                |args, ctx| async move {
+                    Ok(ToolOutput::success(format!(
+                        "{} via {}: {}",
+                        ctx.tool_name, ctx.tool_call_id, args
+                    )))
+                },
+            ))
+            .expect("tool should register");
+
+        let message = registry
+            .execute(
+                &ToolCall {
+                    id: "call_123".to_string(),
+                    name: "lookup".to_string(),
+                    arguments: serde_json::json!({ "symbol": 7, "extra": true }),
+                },
+                test_tool_context("lookup"),
+            )
+            .await
+            .expect("tool execution should succeed");
+
+        assert!(!message.tool_error);
+        assert_eq!(
+            message.content,
+            r#"lookup via call_123: {"extra":true,"symbol":7}"#
+        );
+    }
+
+    #[tokio::test]
+    async fn from_definition_error_outputs_become_tool_errors() {
+        let mut registry = ToolRegistry::new();
+        registry
+            .register(Tool::from_definition(
+                raw_definition(),
+                |_args, _ctx| async { Ok(ToolOutput::error("symbol not found")) },
+            ))
+            .expect("tool should register");
+
+        let message = registry
+            .execute(
+                &ToolCall {
+                    id: "call_123".to_string(),
+                    name: "lookup".to_string(),
+                    arguments: serde_json::json!({}),
+                },
+                test_tool_context("lookup"),
+            )
+            .await
+            .expect("tool execution should return a tool message");
+
+        assert!(message.tool_error);
+        assert_eq!(message.content, "symbol not found");
+    }
+
+    #[tokio::test]
+    async fn from_definition_handler_failures_become_tool_errors() {
+        let mut registry = ToolRegistry::new();
+        registry
+            .register(Tool::from_definition(
+                raw_definition(),
+                |_args, _ctx| async {
+                    Err(Error::InvalidRequest("backend unavailable".to_string()))
+                },
+            ))
+            .expect("tool should register");
+
+        let message = registry
+            .execute(
+                &ToolCall {
+                    id: "call_123".to_string(),
+                    name: "lookup".to_string(),
+                    arguments: serde_json::json!({}),
+                },
+                test_tool_context("lookup"),
+            )
+            .await
+            .expect("tool execution should return a tool message");
+
+        assert!(message.tool_error);
+        assert_eq!(
+            tool_error_payload(&message)["error"],
+            "invalid request: backend unavailable"
+        );
     }
 }

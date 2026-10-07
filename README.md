@@ -20,6 +20,7 @@
 - **Structured output**: derive `JsonSchema` and call `.generate_structured::<T>()` or `.generate_structured_once::<T>()`.
 - **Tool calling**: register typed async tools; `generate()` executes tool calls and feeds results back to the model until a final answer is produced.
 - **Streaming**: consume provider stream events directly, high-level stream events, or use `stream_accumulated()` to stream internally and return a full response. Dropping a stream aborts the upstream provider request.
+- **MCP tools** (`mcp` feature): register a Model Context Protocol server's whole tool catalog, with its schemas unchanged, and execute calls through one generic path that keeps MCP `isError` results as tool errors.
 - **Proxyable streams**: `stream_wire_events()` yields serializable events so a server can re-emit a generation to its own clients over SSE, and `StreamAccumulator` reassembles them on the far side.
 - **Local and self-hosted models**: point a client at any OpenAI-compatible endpoint — Ollama, vLLM, LM Studio — with no API key required, and get a typed error rather than an opaque HTTP failure when the endpoint cannot do tools or structured output.
 - **Retry/backoff**: transient `RateLimit`, `Timeout`, and HTTP errors are retried with configurable exponential backoff and jitter.
