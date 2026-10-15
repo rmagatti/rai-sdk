@@ -40,6 +40,9 @@ pub use anthropic::AnthropicProvider;
 #[cfg(feature = "openrouter")]
 pub use openrouter::OpenRouterProvider;
 
+#[cfg(any(feature = "openai", feature = "anthropic", feature = "openrouter"))]
+mod usage;
+
 use crate::message::Usage;
 
 /// Build the HTTP client with a deterministic TLS backend.
@@ -88,10 +91,11 @@ pub enum ProviderStreamEvent {
         /// Partial JSON text to append to previously received fragments.
         arguments: String,
     },
-    /// Generation finished.
+    /// A cumulative usage snapshot or generation stop.
     ///
     /// Depending on the provider, the finish reason and usage may arrive in
-    /// separate `Done` events.
+    /// separate `Done` events. A usage-only event need not end the stream;
+    /// merge its reported fields rather than summing snapshots.
     Done {
         /// Why generation stopped, e.g. `"stop"` or `"tool_use"`.
         finish_reason: Option<String>,

@@ -227,7 +227,7 @@ Unlike the other streaming methods, `stream_wire_events()` items are not `Result
 | `text_delta` | Append this text to the output so far. |
 | `tool_call_start` / `tool_call_delta` / `tool_call_end` | A tool call, first incrementally and then assembled. |
 | `tool_result` | The output of executing a tool call. Only a proxy that runs tools itself emits this. |
-| `usage` | Token counts, emitted once just before the terminal event. |
+| `usage` | Token counts and optional provider-reported USD cost, emitted once just before the terminal event. |
 | `message_stop` | Terminal event of a successful stream. |
 | `turn_complete` | An assembled `ConversationTurn`, for history. |
 | `error` | Terminal event of a failed stream. |
@@ -239,6 +239,22 @@ A mid-stream provider failure arrives as `error` rather than as a truncated resp
 The `"type"` strings and each event's field names are a compatibility surface: a server and a client can be built from different `rai-sdk` versions. Renaming or removing one is a breaking change and will be called out in the changelog. Adding a variant is not, so match with a catch-all arm — `WireStreamEvent` and `WireErrorKind` are both `#[non_exhaustive]`, and an unrecognized error kind deserializes into `WireErrorKind::Other` instead of failing.
 
 `WIRE_PROTOCOL_VERSION` names the current revision of the framing and rides on every `message_start`. It is bumped only when a client must react to a framing change, never for additive variants.
+
+## Usage snapshots
+
+Provider usage updates are cumulative snapshots for one generation. The SDK
+replaces each field only when a later snapshot reports a value, preserves
+explicit zero, and keeps earlier fields when later ones are absent or null.
+Repeated snapshots are never added together. This includes cache counts and
+costs from the Anthropic `message_start` event when a later `message_delta`
+reports only output tokens.
+
+`stream_accumulated()` and `stream_wire_events()` merge these snapshots;
+`stream_wire_events()` emits one combined `usage` event before `message_stop`.
+`StreamAccumulator` also merges repeated wire usage events field by field.
+These are snapshots of one generation, not a sum across tool-loop requests.
+See [Usage and provider-reported cost](./providers-and-models.md#usage-and-provider-reported-cost)
+for counter semantics, USD units, and the `Usage` struct-literal migration.
 
 ## Timeouts
 

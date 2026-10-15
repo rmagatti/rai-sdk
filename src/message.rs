@@ -585,18 +585,54 @@ impl From<String> for Prompt {
     }
 }
 
-/// Token usage metadata from the AI response.
+/// Token usage and provider-reported cost for one generation.
 ///
-/// Fields are optional because providers do not all report the same counters,
-/// and streaming responses only include usage on the final event.
+/// `None` means a field was absent or null, not that its value was zero.
+/// Streaming usage updates are cumulative snapshots: later reported fields
+/// replace earlier ones, including explicit zero, while absent fields are kept.
+/// Costs are copied from the response; the SDK never estimates prices or makes
+/// separate billing requests.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Usage {
-    /// Tokens consumed by the prompt (input tokens).
+    /// Provider's prompt count. OpenAI/OpenRouter Chat Completions include cached
+    /// tokens; Anthropic's `input_tokens` excludes cache reads and writes.
     pub prompt_tokens: Option<i32>,
     /// Tokens produced by the model (output tokens).
     pub completion_tokens: Option<i32>,
-    /// Prompt plus completion tokens.
+    /// Provider's total, or prompt plus completion for Anthropic. As with
+    /// `prompt_tokens`, Anthropic's total excludes cache reads and writes.
     pub total_tokens: Option<i32>,
+    /// Input tokens read from the prompt cache, when reported.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_read_tokens: Option<i32>,
+    /// Input tokens written to the prompt cache, when reported.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_write_tokens: Option<i32>,
+    /// Provider-reported charge for this request in US dollars, from `usage.cost`
+    /// on OpenRouter or compatible endpoints using the same USD extension.
+    /// Native OpenAI and Anthropic responses normally leave this absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+    /// Upstream provider's inference cost in US dollars, from
+    /// `usage.cost_details.upstream_inference_cost`. This is distinct from the
+    /// account charge in `cost_usd`, particularly for bring-your-own-key routing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upstream_inference_cost_usd: Option<f64>,
+}
+
+impl Usage {
+    /// Merge a cumulative snapshot without treating missing values as zero.
+    pub(crate) fn merge(&mut self, newer: Self) {
+        self.prompt_tokens = newer.prompt_tokens.or(self.prompt_tokens);
+        self.completion_tokens = newer.completion_tokens.or(self.completion_tokens);
+        self.total_tokens = newer.total_tokens.or(self.total_tokens);
+        self.cache_read_tokens = newer.cache_read_tokens.or(self.cache_read_tokens);
+        self.cache_write_tokens = newer.cache_write_tokens.or(self.cache_write_tokens);
+        self.cost_usd = newer.cost_usd.or(self.cost_usd);
+        self.upstream_inference_cost_usd = newer
+            .upstream_inference_cost_usd
+            .or(self.upstream_inference_cost_usd);
+    }
 }
 
 /// The response from an AI generation request.

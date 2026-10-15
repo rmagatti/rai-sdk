@@ -236,13 +236,13 @@ pub enum WireStreamEvent {
         result: String,
     },
 
-    /// Token usage for the generation.
+    /// Token usage and optional provider-reported cost for the generation.
     ///
     /// Emitted once, just before the terminal event, when the provider reports
     /// usage. This is the event a server bills against and a client displays,
     /// so it deliberately carries the counts rather than a summary.
     Usage {
-        /// Token counts as reported by the provider.
+        /// Token counts and optional USD costs as reported by the provider.
         usage: Usage,
     },
 
@@ -766,7 +766,9 @@ impl StreamAccumulator {
                 self.tool_results.push(Message::tool(result, id));
             }
 
-            WireStreamEvent::Usage { usage } => self.usage = Some(usage),
+            WireStreamEvent::Usage { usage } => {
+                self.usage.get_or_insert_with(Usage::default).merge(usage);
+            }
 
             WireStreamEvent::MessageStop { finish_reason } => {
                 self.flush_pending_tool_call();
@@ -923,6 +925,7 @@ mod tests {
             prompt_tokens: Some(1_024),
             completion_tokens: Some(256),
             total_tokens: Some(1_280),
+            ..Usage::default()
         }
     }
 

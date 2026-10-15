@@ -394,6 +394,7 @@ fn usage_defaults_to_all_unknown_and_round_trips() {
         prompt_tokens: Some(11),
         completion_tokens: Some(7),
         total_tokens: Some(18),
+        ..Usage::default()
     };
     let decoded: Usage = serde_json::from_value(to_json(&usage)).expect("usage should round-trip");
     assert_eq!(decoded.prompt_tokens, Some(11));
@@ -425,6 +426,7 @@ fn response_round_trips_through_json() {
             prompt_tokens: Some(3),
             completion_tokens: Some(1),
             total_tokens: Some(4),
+            ..Usage::default()
         }),
         model: "claude-sonnet-4-6".to_string(),
         provider: rai_sdk::ProviderKind::Anthropic,
