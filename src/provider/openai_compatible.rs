@@ -72,6 +72,8 @@
 //! Nothing is probed: capabilities are declared by the caller, never
 //! auto-detected.
 
+use super::usage::ChatCompletionsUsage;
+
 use std::pin::Pin;
 
 use futures::Stream;
@@ -352,11 +354,7 @@ impl OpenAICompatibleProvider {
             })
             .collect::<Result<Vec<_>>>()?;
 
-        let usage = response.usage.map(|u| Usage {
-            prompt_tokens: Some(u.prompt_tokens),
-            completion_tokens: Some(u.completion_tokens),
-            total_tokens: Some(u.total_tokens),
-        });
+        let usage = response.usage.map(Usage::from);
 
         info!(
             model = model.as_str(),
@@ -517,13 +515,6 @@ struct ChatCompletionsToolCall {
 struct ChatCompletionsFunctionCall {
     name: String,
     arguments: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct ChatCompletionsUsage {
-    prompt_tokens: i32,
-    completion_tokens: i32,
-    total_tokens: i32,
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────

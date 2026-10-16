@@ -11,6 +11,8 @@
 //! message list into the request's top-level `system` field, and tool results
 //! are sent as user-role `tool_result` blocks.
 
+use super::usage::CostDetails;
+
 use std::pin::Pin;
 
 use bytes::Bytes;
@@ -344,11 +346,7 @@ impl AnthropicProvider {
             })
             .collect();
 
-        let usage = Some(Usage {
-            prompt_tokens: Some(response.usage.input_tokens),
-            completion_tokens: Some(response.usage.output_tokens),
-            total_tokens: Some(response.usage.input_tokens + response.usage.output_tokens),
-        });
+        let usage = Some(Usage::from(response.usage));
 
         info!(
             model = model.as_str(),
@@ -403,10 +401,10 @@ impl AnthropicProvider {
         async_stream::stream! {
             tokio::pin!(byte_stream);
             let mut current_tool_id: Option<String> = None;
-            // Anthropic splits usage across two events: `message_start` reports
-            // the input tokens and `message_delta` the final output tokens, so
-            // the input count has to be held here until the delta arrives.
-            let mut input_tokens: Option<i32> = None;
+            // Both start and delta counts are cumulative snapshots. Preserve
+            // cache/cost fields when a later snapshot only reports output.
+            let mut accumulated_usage: Option<Usage> = None;
+            let mut usage_emitted = false;
 
             while let Some(chunk_result) = byte_stream.next().await {
                 match chunk_result {
@@ -464,10 +462,13 @@ impl AnthropicProvider {
                                 }
                                 "message_delta" => {
                                     if let Ok(delta) = serde_json::from_str::<MessageDelta>(&event_data) {
-                                        let usage = delta.usage.map(|u| Usage {
-                                            prompt_tokens: input_tokens,
-                                            completion_tokens: Some(u.output_tokens),
-                                            total_tokens: input_tokens.map(|input| input + u.output_tokens),
+                                        let usage = delta.usage.map(|u| {
+                                            let accumulated = accumulated_usage.get_or_insert_with(Usage::default);
+                                            accumulated.merge(u.into());
+                                            accumulated.total_tokens = accumulated.prompt_tokens.zip(accumulated.completion_tokens)
+                                                .and_then(|(input, output)| input.checked_add(output));
+                                            usage_emitted = true;
+                                            accumulated.clone()
                                         });
 
                                         if delta.delta.stop_reason.is_some() || usage.is_some() {
@@ -480,10 +481,18 @@ impl AnthropicProvider {
                                 }
                                 "message_start" => {
                                     if let Ok(start) = serde_json::from_str::<MessageStart>(&event_data) {
-                                        // Only the input count is authoritative here: the
-                                        // `output_tokens` reported alongside it is a partial
-                                        // figure that `message_delta` later supersedes.
-                                        input_tokens = Some(start.message.usage.input_tokens);
+                                        accumulated_usage.get_or_insert_with(Usage::default)
+                                            .merge(start.message.usage.into());
+                                    }
+                                }
+                                "message_stop" => {
+                                    if !usage_emitted {
+                                        if let Some(usage) = accumulated_usage.take() {
+                                            yield Ok(crate::provider::ProviderStreamEvent::Done {
+                                                finish_reason: None,
+                                                usage: Some(usage),
+                                            });
+                                        }
                                     }
                                 }
                                 "error" => {
@@ -647,8 +656,30 @@ struct AnthropicResponseContentBlock {
 
 #[derive(Debug, Deserialize)]
 struct AnthropicUsage {
-    input_tokens: i32,
-    output_tokens: i32,
+    input_tokens: Option<i32>,
+    output_tokens: Option<i32>,
+    cache_read_input_tokens: Option<i32>,
+    cache_creation_input_tokens: Option<i32>,
+    // OpenRouter Messages response extensions; native Anthropic omits these.
+    cost: Option<f64>,
+    cost_details: Option<CostDetails>,
+}
+
+impl From<AnthropicUsage> for Usage {
+    fn from(usage: AnthropicUsage) -> Self {
+        Self {
+            prompt_tokens: usage.input_tokens,
+            completion_tokens: usage.output_tokens,
+            total_tokens: usage
+                .input_tokens
+                .zip(usage.output_tokens)
+                .and_then(|(input, output)| input.checked_add(output)),
+            cache_read_tokens: usage.cache_read_input_tokens,
+            cache_write_tokens: usage.cache_creation_input_tokens,
+            cost_usd: usage.cost,
+            upstream_inference_cost_usd: usage.cost_details.and_then(|d| d.upstream_inference_cost),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -688,7 +719,7 @@ struct ContentDelta {
 #[derive(Debug, Deserialize)]
 struct MessageDelta {
     delta: MessageDeltaContent,
-    usage: Option<StreamUsage>,
+    usage: Option<AnthropicUsage>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -704,11 +735,6 @@ struct MessageStartDetail {
 #[derive(Debug, Deserialize)]
 struct MessageDeltaContent {
     stop_reason: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct StreamUsage {
-    output_tokens: i32,
 }
 
 #[derive(Debug, Deserialize)]

@@ -1272,38 +1272,39 @@ impl<'a, ClientModelState> RequestBuilder<'a, PromptReady, ModelReady, ClientMod
                             crate::provider::ProviderStreamEvent::ToolCallChunk { id: _, arguments } => {
                                 current_tool_args.push_str(&arguments);
                             }
-                            crate::provider::ProviderStreamEvent::Done { finish_reason: _, usage: _ } => {
-                                if let (Some(tid), Some(tname)) = (current_tool_id.take(), current_tool_name.take()) {
-                                    let args_json = serde_json::from_str(&current_tool_args).unwrap_or(serde_json::Value::Null);
-                                    tool_calls.push(crate::message::ToolCall {
-                                        id: tid.clone(),
-                                        name: tname.clone(),
-                                        arguments: args_json,
-                                    });
-                                    yield Ok(crate::message::StreamEvent::ToolCall {
-                                        id: tid,
-                                        name: tname,
-                                        arguments: current_tool_args.clone(),
-                                    });
-                                }
-
-                                let mut assistant_message = crate::message::Message::assistant(accumulated_content.clone());
-                                assistant_message.tool_calls = tool_calls.clone();
-
-                                let turn = crate::message::ConversationTurn {
-                                    user_message: user_message.clone(),
-                                    assistant_message,
-                                    tool_results: Vec::new(),
-                                };
-                                yield Ok(crate::message::StreamEvent::TurnComplete { turn });
-                            }
+                            // Usage-only updates can arrive before the final
+                            // content or tool arguments. Complete once at EOF.
+                            crate::provider::ProviderStreamEvent::Done { .. } => {}
                         }
                     }
                     Err(e) => {
                         yield Err(e);
+                        return;
                     }
                 }
             }
+
+            if let (Some(id), Some(name)) = (current_tool_id.take(), current_tool_name.take()) {
+                let arguments = serde_json::from_str(&current_tool_args).unwrap_or(serde_json::Value::Null);
+                tool_calls.push(crate::message::ToolCall {
+                    id: id.clone(),
+                    name: name.clone(),
+                    arguments,
+                });
+                yield Ok(crate::message::StreamEvent::ToolCall {
+                    id,
+                    name,
+                    arguments: current_tool_args,
+                });
+            }
+            let mut assistant_message = crate::message::Message::assistant(accumulated_content);
+            assistant_message.tool_calls = tool_calls;
+            let turn = crate::message::ConversationTurn {
+                user_message,
+                assistant_message,
+                tool_results: Vec::new(),
+            };
+            yield Ok(crate::message::StreamEvent::TurnComplete { turn });
         };
 
         Ok(stream_events)
@@ -1472,18 +1473,19 @@ impl<'a, ClientModelState> RequestBuilder<'a, PromptReady, ModelReady, ClientMod
                         finish_reason: reason,
                         usage: reported,
                     } => {
-                        if let Some((id, name, arguments)) = pending_tool.take() {
-                            yield WireStreamEvent::ToolCallEnd { id, name, arguments };
+                        if reason.is_some() {
+                            if let Some((id, name, arguments)) = pending_tool.take() {
+                                yield WireStreamEvent::ToolCallEnd { id, name, arguments };
+                            }
                         }
                         // Providers may split the finish reason and the usage
-                        // across separate `Done` events, so keep the last of
-                        // each rather than emitting one terminal event per
-                        // `Done`.
+                        // across separate `Done` events. Merge cumulative usage
+                        // fields and emit one terminal wire event.
                         if reason.is_some() {
                             finish_reason = reason;
                         }
-                        if reported.is_some() {
-                            usage = reported;
+                        if let Some(reported) = reported {
+                            usage.get_or_insert_with(crate::message::Usage::default).merge(reported);
                         }
                     }
                 }
@@ -1676,8 +1678,10 @@ impl<'a, ClientModelState> RequestBuilder<'a, PromptReady, ModelReady, ClientMod
                     if fr.is_some() {
                         finish_reason = fr;
                     }
-                    if u.is_some() {
-                        usage = u;
+                    if let Some(reported) = u {
+                        usage
+                            .get_or_insert_with(crate::message::Usage::default)
+                            .merge(reported);
                     }
                 }
                 _ => {}

@@ -11,6 +11,8 @@
 //! `X-OpenRouter-Categories`) are sent when the corresponding configuration
 //! values are present.
 
+use super::usage::ChatCompletionsUsage;
+
 use std::pin::Pin;
 
 use bytes::Bytes;
@@ -341,11 +343,7 @@ impl OpenRouterProvider {
             })
             .collect::<Result<Vec<_>>>()?;
 
-        let usage = response.usage.map(|u| Usage {
-            prompt_tokens: Some(u.prompt_tokens),
-            completion_tokens: Some(u.completion_tokens),
-            total_tokens: Some(u.total_tokens),
-        });
+        let usage = response.usage.map(Usage::from);
 
         info!(
             model = model.as_str(),
@@ -399,8 +397,10 @@ impl OpenRouterProvider {
         async_stream::stream! {
             tokio::pin!(byte_stream);
             let mut current_tool_id: Option<String> = None;
+            let mut usage: Option<Usage> = None;
+            let mut last_finish_reason: Option<String> = None;
 
-            while let Some(chunk_result) = byte_stream.next().await {
+            'read: while let Some(chunk_result) = byte_stream.next().await {
                 match chunk_result {
                     Ok(bytes) => {
                         buffer.push_str(&String::from_utf8_lossy(&bytes));
@@ -412,23 +412,11 @@ impl OpenRouterProvider {
                             for line in event.lines() {
                                 if let Some(data) = line.strip_prefix("data: ") {
                                     if data == "[DONE]" {
-                                        return;
+                                        break 'read;
                                     }
 
                                     match serde_json::from_str::<OpenRouterStreamResponse>(data) {
                                         Ok(stream_response) => {
-                                            if let Some(usage) = stream_response.usage {
-                                                yield Ok(crate::provider::ProviderStreamEvent::Done {
-                                                    finish_reason: stream_response.choices.first().and_then(|c| c.finish_reason.clone()).or(Some("stop".to_string())),
-                                                    usage: Some(Usage {
-                                                        prompt_tokens: Some(usage.prompt_tokens),
-                                                        completion_tokens: Some(usage.completion_tokens),
-                                                        total_tokens: Some(usage.total_tokens),
-                                                    }),
-                                                });
-                                                continue;
-                                            }
-
                                             if let Some(choice) = stream_response.choices.first() {
                                                 if let Some(content) = &choice.delta.content {
                                                     if !content.is_empty() {
@@ -459,11 +447,21 @@ impl OpenRouterProvider {
                                                 }
 
                                                 if let Some(finish_reason) = &choice.finish_reason {
-                                                    yield Ok(crate::provider::ProviderStreamEvent::Done {
-                                                        finish_reason: Some(finish_reason.clone()),
-                                                        usage: None,
-                                                    });
+                                                    last_finish_reason = Some(finish_reason.clone());
+                                                    if stream_response.usage.is_none() {
+                                                        yield Ok(crate::provider::ProviderStreamEvent::Done {
+                                                            finish_reason: last_finish_reason.clone(),
+                                                            usage: None,
+                                                        });
+                                                    }
                                                 }
+                                            }
+                                            if let Some(reported) = stream_response.usage {
+                                                usage.get_or_insert_with(Usage::default).merge(reported.into());
+                                                yield Ok(crate::provider::ProviderStreamEvent::Done {
+                                                    finish_reason: last_finish_reason.clone(),
+                                                    usage: usage.clone(),
+                                                });
                                             }
                                         }
                                         Err(e) => {
@@ -479,6 +477,12 @@ impl OpenRouterProvider {
                         return;
                     }
                 }
+            }
+            if last_finish_reason.is_none() && usage.is_some() {
+                yield Ok(crate::provider::ProviderStreamEvent::Done {
+                    finish_reason: Some("stop".to_string()),
+                    usage,
+                });
             }
         }
     }
@@ -591,7 +595,7 @@ struct OpenRouterRequestFunctionCall {
 #[derive(Debug, Deserialize)]
 struct OpenRouterResponse {
     choices: Vec<OpenRouterChoice>,
-    usage: Option<OpenRouterUsage>,
+    usage: Option<ChatCompletionsUsage>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -619,16 +623,9 @@ struct OpenRouterResponseFunctionCall {
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenRouterUsage {
-    prompt_tokens: i32,
-    completion_tokens: i32,
-    total_tokens: i32,
-}
-
-#[derive(Debug, Deserialize)]
 struct OpenRouterStreamResponse {
     choices: Vec<OpenRouterStreamChoice>,
-    usage: Option<OpenRouterUsage>,
+    usage: Option<ChatCompletionsUsage>,
 }
 
 #[derive(Debug, Deserialize)]

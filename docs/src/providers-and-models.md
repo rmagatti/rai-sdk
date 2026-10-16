@@ -231,3 +231,67 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 ```
+
+## Usage and provider-reported cost
+
+`Response::usage` exposes the provider's counters and, when supplied, its reported
+cost. The same `Usage` type travels through `ProviderStreamEvent::Done` and the
+wire `usage` event. Each field is optional: `None` means absent or null;
+`Some(0)` or `Some(0.0)` means the provider explicitly reported zero.
+
+| `Usage` field | Chat Completions (OpenAI / OpenRouter / compatible) | Anthropic Messages format |
+| --- | --- | --- |
+| `prompt_tokens` | `usage.prompt_tokens`, including cached input | `usage.input_tokens`, excluding cache reads and writes |
+| `completion_tokens` | `usage.completion_tokens` | `usage.output_tokens` |
+| `total_tokens` | `usage.total_tokens` | Input plus output, excluding cache reads and writes |
+| `cache_read_tokens` | `usage.prompt_tokens_details.cached_tokens` | `usage.cache_read_input_tokens` |
+| `cache_write_tokens` | `usage.prompt_tokens_details.cache_write_tokens` | `usage.cache_creation_input_tokens` |
+| `cost_usd` | `usage.cost` (OpenRouter USD extension) | `usage.cost` (OpenRouter Messages USD extension) |
+| `upstream_inference_cost_usd` | `usage.cost_details.upstream_inference_cost` | `usage.cost_details.upstream_inference_cost` (OpenRouter extension) |
+
+Cache counts stay separate from the existing prompt and total counters. For
+Anthropic, all input tokens are the sum of `prompt_tokens`, `cache_read_tokens`,
+and `cache_write_tokens`, when all three are known. For Chat Completions, cache
+counts are a breakdown of the prompt; adding them again would double count.
+
+Costs are US dollars per request, copied from the response, with no price
+estimation or extra billing requests. OpenRouter's `cost` is the charge to the
+account; `upstream_inference_cost` is the upstream provider's inference cost.
+They remain independent, including with bring-your-own-key routing. One is
+never used as a fallback for the other. Native OpenAI and Anthropic responses
+normally omit these costs, leaving them `None`. Compatible endpoints must use
+the same USD semantics for these cost extensions.
+
+OpenRouter documents the cost extensions on non-streaming Messages responses.
+Its current streaming Messages schema does not list them; the Anthropic codec
+preserves them if supplied on `message_start` or `message_delta`, without
+assuming they will be present.
+
+Sources: [OpenAI Chat Completions usage](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create),
+[Anthropic cache accounting](https://platform.claude.com/docs/en/build-with-claude/prompt-caching#tracking-cache-performance),
+[OpenRouter usage accounting](https://openrouter.ai/docs/cookbook/administration/usage-accounting),
+[OpenRouter Messages schemas](https://openrouter.ai/openapi.json), and
+[OpenRouter USD credits](https://openrouter.ai/support/).
+
+### Migrating `Usage` struct literals
+
+Adding the optional fields is a Rust source compatibility change for exhaustive
+struct literals and patterns. Add `..Usage::default()` to existing literals,
+and `..` to patterns that only need the original counters:
+
+```rust
+use rai_sdk::Usage;
+
+let usage = Usage {
+    prompt_tokens: Some(12),
+    completion_tokens: Some(3),
+    total_tokens: Some(15),
+    ..Usage::default()
+};
+let Usage { total_tokens, .. } = usage;
+assert_eq!(total_tokens, Some(15));
+```
+
+Older serialized usage objects still deserialize; new optional fields serialize
+only when present, so responses without cache or cost metadata retain their
+existing JSON shape. Wire framing and `WIRE_PROTOCOL_VERSION` are unchanged.
