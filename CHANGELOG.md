@@ -11,6 +11,12 @@ the public API. Breaking changes are always called out below.
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/rmagatti/rai-sdk/compare/v0.3.2...v0.4.0) - 2026-10-16
+
+### Added
+
+- [**breaking**] expose cache usage and provider-reported cost ([#21](https://github.com/rmagatti/rai-sdk/pull/21))
+
 ## [0.3.2](https://github.com/rmagatti/rai-sdk/compare/v0.3.1...v0.3.2) - 2026-10-07
 
 ### Added
