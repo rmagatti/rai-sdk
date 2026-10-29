@@ -197,9 +197,12 @@ impl GenerationConfig {
 
     /// Enable or disable Anthropic prompt caching for this request.
     ///
-    /// When enabled, Anthropic requests mark the system prompt and the final
-    /// tool definition as ephemeral cache breakpoints. Other providers silently
-    /// ignore this setting.
+    /// When enabled, Anthropic requests carry ephemeral cache breakpoints on
+    /// the system prompt, on the final tool definition, and on the last content
+    /// block of the final conversation message. The message breakpoint moves to
+    /// the newest message on every request, so each tool round and each new
+    /// turn reads the conversation so far from the cache instead of sending it
+    /// again as uncached input. Other providers silently ignore this setting.
     ///
     /// # Examples
     ///
