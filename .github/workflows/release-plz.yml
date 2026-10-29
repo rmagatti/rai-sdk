@@ -145,7 +145,7 @@ jobs:
       - name: Install release-plz
         uses: taiki-e/install-action@v2
         with:
-          tool: release-plz
+          tool: release-plz@0.3.173
 
       - name: Check for releasable commits since the last tag
         id: gate
