@@ -143,9 +143,20 @@ jobs:
           tool: cargo-semver-checks
 
       - name: Install release-plz
-        uses: taiki-e/install-action@v2
-        with:
-          tool: release-plz@0.3.173
+        # The glibc build, downloaded directly: taiki-e/install-action ships
+        # the musl build, and since release-plz 0.3.172 (pest 2.9.3's stack
+        # headroom check through `stacker`) that build fails changelog
+        # rendering with "Template parse error ... stack limit reached" on
+        # the GitHub runners. The archive is pinned by version and checksum.
+        run: |
+          version=0.3.173
+          archive="release-plz-x86_64-unknown-linux-gnu.tar.gz"
+          curl --fail --location --silent --show-error --output "$archive" \
+            "https://github.com/release-plz/release-plz/releases/download/release-plz-v${version}/${archive}"
+          echo "70102c49a98e521b79c49740ec0181fd232b96b2217cd906cb70d04b67a4d132  $archive" | sha256sum --check --strict
+          tar --extract --gzip --file "$archive" --directory "${CARGO_HOME}/bin" release-plz
+          rm "$archive"
+          release-plz --version
 
       - name: Check for releasable commits since the last tag
         id: gate
