@@ -11,6 +11,12 @@ the public API. Breaking changes are always called out below.
 
 ## [Unreleased]
 
+## [0.4.1](https://github.com/rmagatti/rai-sdk/compare/v0.4.0...v0.4.1) - 2026-10-29
+
+### Added
+
+- *(anthropic)* add a moving cache breakpoint on the final conversation message ([#25](https://github.com/rmagatti/rai-sdk/pull/25))
+
 ## [0.4.0](https://github.com/rmagatti/rai-sdk/compare/v0.3.2...v0.4.0) - 2026-10-16
 
 ### Added
