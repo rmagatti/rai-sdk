@@ -78,6 +78,78 @@ async fn anthropic_prompt_caching_marks_system_and_last_tool() {
 }
 
 #[tokio::test]
+async fn anthropic_prompt_caching_moves_the_breakpoint_to_each_rounds_final_message() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/messages"))
+        .respond_with(Script::new(vec![
+            Step::ok(json!({
+                "content": [{ "type": "tool_use", "id": "call_1", "name": "lookup", "input": {} }],
+                "stop_reason": "tool_use",
+                "usage": { "input_tokens": 12, "output_tokens": 2 }
+            })),
+            Step::ok(anthropic_response()),
+        ]))
+        .mount(&server)
+        .await;
+    let client = anthropic_builder(&server.uri())
+        .model(Model::claude_sonnet_46())
+        .build()
+        .expect("client should build");
+
+    client
+        .request()
+        .tools([test_tool("lookup")])
+        .config(GenerationConfig::new().with_prompt_caching(true))
+        .prompt(vec![
+            Message::system("You are concise."),
+            Message::user("Look it up."),
+        ])
+        .generate()
+        .await
+        .expect("mocked tool loop should succeed");
+
+    let bodies = received_json_bodies(&server).await;
+    assert_eq!(bodies.len(), 2, "one request per tool round");
+
+    // Round 1 ends with the user's turn, so that turn carries the breakpoint.
+    assert_eq!(
+        bodies[0]["messages"],
+        json!([{
+            "role": "user",
+            "content": [{
+                "type": "text",
+                "text": "Look it up.",
+                "cache_control": { "type": "ephemeral" }
+            }]
+        }])
+    );
+
+    // Round 2 repeats round 1 unmarked and moves the breakpoint to its own
+    // final message, the tool result, so round 1's prefix is read from cache.
+    let round_two = bodies[1]["messages"]
+        .as_array()
+        .expect("messages should be an array");
+    assert_eq!(round_two.len(), 3);
+    assert_eq!(
+        round_two[0],
+        json!({ "role": "user", "content": "Look it up." })
+    );
+    assert_eq!(round_two[1]["content"][0]["type"], "tool_use");
+    assert!(!round_two[1].to_string().contains("cache_control"));
+    assert_eq!(round_two[2]["content"][0]["type"], "tool_result");
+    assert_eq!(
+        round_two[2]["content"][0]["cache_control"],
+        json!({ "type": "ephemeral" })
+    );
+
+    // System, last tool and final message: three of Anthropic's four slots.
+    for body in &bodies {
+        assert_eq!(body.to_string().matches("cache_control").count(), 3);
+    }
+}
+
+#[tokio::test]
 async fn anthropic_prompt_caching_defaults_to_the_existing_wire_shape() {
     let server = anthropic_server().await;
     let client = anthropic_builder(&server.uri())

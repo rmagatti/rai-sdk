@@ -10,6 +10,13 @@
 //! generation config does not set one. System messages are hoisted out of the
 //! message list into the request's top-level `system` field, and tool results
 //! are sent as user-role `tool_result` blocks.
+//!
+//! With [`GenerationConfig::with_prompt_caching`] enabled, ephemeral
+//! `cache_control` breakpoints go on the system prompt, on the last tool
+//! definition, and on the last content block of the final conversation message:
+//! at most three of the four Anthropic allows. The message breakpoint moves with
+//! the conversation, so every tool round and every new turn reads what came
+//! before it from the cache.
 
 use super::usage::CostDetails;
 
@@ -198,11 +205,20 @@ impl AnthropicProvider {
             }
         });
 
-        let messages: Vec<AnthropicMessage> = prompt
+        let mut messages: Vec<AnthropicMessage> = prompt
             .conversation_messages()
             .into_iter()
             .map(Self::build_message)
             .collect();
+        if prompt_caching {
+            // Requests are rebuilt from the whole prompt each round, so this
+            // breakpoint always sits on the newest message: the next round or
+            // turn reads everything up to here from the cache, and only what it
+            // appends is new input.
+            if let Some(last) = messages.last_mut() {
+                last.mark_cache_breakpoint();
+            }
+        }
 
         AnthropicRequest {
             model: model.as_str().to_string(),
@@ -250,6 +266,7 @@ impl AnthropicProvider {
                     tool_use_id: message.tool_call_id.clone().unwrap_or_default(),
                     content: message.content.clone(),
                     is_error: message.tool_error,
+                    cache_control: None,
                 }]),
             };
         }
@@ -258,9 +275,10 @@ impl AnthropicProvider {
 
         if message.is_multimodal() {
             content_blocks.extend(message.content_blocks.iter().map(|block| match block {
-                CommonContentBlock::Text { text } => {
-                    AnthropicContentBlock::Text { text: text.clone() }
-                }
+                CommonContentBlock::Text { text } => AnthropicContentBlock::Text {
+                    text: text.clone(),
+                    cache_control: None,
+                },
                 CommonContentBlock::Image { source } => {
                     let api_source = match source {
                         CommonImageSource::Url { url } => {
@@ -273,7 +291,10 @@ impl AnthropicProvider {
                             }
                         }
                     };
-                    AnthropicContentBlock::Image { source: api_source }
+                    AnthropicContentBlock::Image {
+                        source: api_source,
+                        cache_control: None,
+                    }
                 }
                 _ => unimplemented!(
                     "Audio, Video, and File blocks are not yet supported for Anthropic"
@@ -282,6 +303,7 @@ impl AnthropicProvider {
         } else if !message.content.is_empty() {
             content_blocks.push(AnthropicContentBlock::Text {
                 text: message.content.clone(),
+                cache_control: None,
             });
         }
 
@@ -291,12 +313,13 @@ impl AnthropicProvider {
                     id: tool_call.id.clone(),
                     name: tool_call.name.clone(),
                     input: tool_call.arguments.clone(),
+                    cache_control: None,
                 }
             }));
         }
 
         if content_blocks.len() == 1 {
-            if let AnthropicContentBlock::Text { text } = &content_blocks[0] {
+            if let AnthropicContentBlock::Text { text, .. } = &content_blocks[0] {
                 if message.tool_calls.is_empty() {
                     return AnthropicMessage {
                         role,
@@ -577,7 +600,7 @@ enum AnthropicSystemBlockType {
     Text,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum AnthropicCacheControl {
     Ephemeral,
@@ -607,18 +630,65 @@ enum AnthropicMessageContent {
     Blocks(Vec<AnthropicContentBlock>),
 }
 
+impl AnthropicMessage {
+    /// Puts an ephemeral cache breakpoint on the last content block that can
+    /// carry one.
+    ///
+    /// Anthropic caches the prefix up to and including a marked block (tools,
+    /// then system, then messages), and a later request whose prefix matches
+    /// reads it back. A bare string cannot carry `cache_control`, so string
+    /// content becomes a one-block array; once the message is no longer final
+    /// it goes back to a string, which reads the same cache entry.
+    ///
+    /// Leaves the message unchanged when no block can carry a breakpoint (no
+    /// blocks at all, or only empty text).
+    fn mark_cache_breakpoint(&mut self) {
+        match &mut self.content {
+            AnthropicMessageContent::Text(text) => {
+                if text.is_empty() {
+                    return;
+                }
+                let text = std::mem::take(text);
+                self.content = AnthropicMessageContent::Blocks(vec![AnthropicContentBlock::Text {
+                    text,
+                    cache_control: Some(AnthropicCacheControl::Ephemeral),
+                }]);
+            }
+            AnthropicMessageContent::Blocks(blocks) => {
+                if let Some(slot) = blocks
+                    .iter_mut()
+                    .rev()
+                    .find_map(AnthropicContentBlock::cache_control_slot)
+                {
+                    *slot = Some(AnthropicCacheControl::Ephemeral);
+                }
+            }
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type")]
 enum AnthropicContentBlock {
     #[serde(rename = "text")]
-    Text { text: String },
+    Text {
+        text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<AnthropicCacheControl>,
+    },
     #[serde(rename = "image")]
-    Image { source: AnthropicImageSource },
+    Image {
+        source: AnthropicImageSource,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<AnthropicCacheControl>,
+    },
     #[serde(rename = "tool_use")]
     ToolUse {
         id: String,
         name: String,
         input: serde_json::Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<AnthropicCacheControl>,
     },
     #[serde(rename = "tool_result")]
     ToolResult {
@@ -626,7 +696,29 @@ enum AnthropicContentBlock {
         content: String,
         #[serde(skip_serializing_if = "std::ops::Not::not")]
         is_error: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<AnthropicCacheControl>,
     },
+}
+
+impl AnthropicContentBlock {
+    /// This block's `cache_control` slot, or `None` when Anthropic cannot cache
+    /// the block (empty text blocks cannot be cached).
+    ///
+    /// Every variant is matched by name, so a block type added later (thinking
+    /// blocks, for one, cannot carry `cache_control`) has to give its own
+    /// answer here.
+    fn cache_control_slot(&mut self) -> Option<&mut Option<AnthropicCacheControl>> {
+        match self {
+            Self::Text {
+                text,
+                cache_control,
+            } => (!text.is_empty()).then_some(cache_control),
+            Self::Image { cache_control, .. }
+            | Self::ToolUse { cache_control, .. }
+            | Self::ToolResult { cache_control, .. } => Some(cache_control),
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -745,6 +837,7 @@ struct StreamError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::message::ContentBlock;
     use crate::message::Message;
     use crate::message::Prompt;
 
@@ -867,6 +960,249 @@ mod tests {
         assert!(
             !body.to_string().contains("cache_control"),
             "default requests must not gain cache-control fields"
+        );
+    }
+
+    /// One message of every shape `build_message` produces: string shorthand,
+    /// an assistant turn with text and two tool calls, a tool result, an error
+    /// tool result, an assistant string, and a multimodal user turn.
+    fn conversation() -> Vec<Message> {
+        let call = |id: &str, desk: &str| ToolCall {
+            id: id.to_string(),
+            name: "lookup".to_string(),
+            arguments: serde_json::json!({ "desk": desk }),
+        };
+        vec![
+            Message::user("Look up the ledger."),
+            Message::assistant_with_tool_calls(
+                "Looking it up.",
+                vec![call("call_1", "HF-007"), call("call_2", "HF-008")],
+            ),
+            Message::tool("ledger rows", "call_1"),
+            Message::tool_error("timed out", "call_2"),
+            Message::assistant("Entry 40 is the largest."),
+            Message::user_multimodal(vec![
+                ContentBlock::text("Compare it with this chart."),
+                ContentBlock::image_url("https://example.com/chart.png"),
+            ]),
+        ]
+    }
+
+    /// The system prompt followed by the first `len` messages of
+    /// [`conversation`].
+    fn prompt_of(len: usize) -> Prompt {
+        let mut messages = vec![Message::system("Cache this prefix.")];
+        messages.extend(conversation().into_iter().take(len));
+        Prompt::new(messages)
+    }
+
+    fn three_tools() -> Vec<ToolDefinition> {
+        ["first", "second", "third"]
+            .map(|name| ToolDefinition {
+                name: name.to_string(),
+                description: None,
+                input_schema: serde_json::json!({ "type": "object" }),
+            })
+            .to_vec()
+    }
+
+    fn request_body(
+        prompt: &Prompt,
+        prompt_caching: bool,
+        tools: Option<&[ToolDefinition]>,
+    ) -> serde_json::Value {
+        let config = if prompt_caching {
+            GenerationConfig::new().with_prompt_caching(true)
+        } else {
+            GenerationConfig::new()
+        };
+        let request = test_provider().build_request(
+            &AnthropicModel::ClaudeSonnet45,
+            prompt,
+            &config,
+            false,
+            tools,
+        );
+        serde_json::to_value(request).expect("request should serialize")
+    }
+
+    /// Every `cache_control` marker anywhere in a serialized request.
+    fn breakpoints(value: &serde_json::Value) -> usize {
+        match value {
+            serde_json::Value::Object(fields) => fields
+                .iter()
+                .map(|(key, value)| usize::from(key == "cache_control") + breakpoints(value))
+                .sum(),
+            serde_json::Value::Array(items) => items.iter().map(breakpoints).sum(),
+            _ => 0,
+        }
+    }
+
+    fn ephemeral() -> serde_json::Value {
+        serde_json::json!({ "type": "ephemeral" })
+    }
+
+    #[test]
+    fn prompt_caching_marks_only_the_final_message() {
+        // The next turn: the conversation so far, then a new plain user turn.
+        let mut messages = vec![Message::system("Cache this prefix.")];
+        messages.extend(conversation().into_iter().take(5));
+        messages.push(Message::user("And the smallest entry?"));
+        let prompt = Prompt::new(messages);
+        let tools = three_tools();
+
+        let cached = request_body(&prompt, true, Some(&tools));
+        let uncached = request_body(&prompt, false, Some(&tools));
+        let cached_messages = cached["messages"].as_array().expect("messages array");
+        let uncached_messages = uncached["messages"].as_array().expect("messages array");
+        let (last, earlier) = cached_messages.split_last().expect("messages present");
+
+        // A string cannot carry cache_control, so the final turn goes out as
+        // one marked text block.
+        assert_eq!(
+            last,
+            &serde_json::json!({
+                "role": "user",
+                "content": [{
+                    "type": "text",
+                    "text": "And the smallest entry?",
+                    "cache_control": { "type": "ephemeral" }
+                }]
+            })
+        );
+        // Earlier messages carry no marker and keep their uncached shape, so
+        // the prefix the next request repeats is unchanged.
+        assert_eq!(earlier.iter().map(breakpoints).sum::<usize>(), 0);
+        assert_eq!(earlier, &uncached_messages[..uncached_messages.len() - 1]);
+    }
+
+    #[test]
+    fn prompt_caching_marks_the_last_tool_result_of_a_round() {
+        // An agent-loop round: two tool calls, each result in its own
+        // user-role message, and nothing after them.
+        let body = request_body(&prompt_of(4), true, None);
+        let messages = body["messages"].as_array().expect("messages array");
+
+        assert_eq!(
+            messages[3],
+            serde_json::json!({
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "call_2",
+                    "content": "timed out",
+                    "is_error": true,
+                    "cache_control": { "type": "ephemeral" }
+                }]
+            })
+        );
+        assert_eq!(messages[..3].iter().map(breakpoints).sum::<usize>(), 0);
+    }
+
+    #[test]
+    fn prompt_caching_marks_a_final_assistant_turn() {
+        let body = request_body(&prompt_of(5), true, None);
+        let messages = body["messages"].as_array().expect("messages array");
+
+        assert_eq!(
+            messages[4],
+            serde_json::json!({
+                "role": "assistant",
+                "content": [{
+                    "type": "text",
+                    "text": "Entry 40 is the largest.",
+                    "cache_control": { "type": "ephemeral" }
+                }]
+            })
+        );
+        assert_eq!(messages[..4].iter().map(breakpoints).sum::<usize>(), 0);
+    }
+
+    #[test]
+    fn prompt_caching_marks_the_last_block_of_a_multi_block_turn() {
+        let body = request_body(&prompt_of(6), true, None);
+        let blocks = body["messages"][5]["content"]
+            .as_array()
+            .expect("multimodal turn is a block array");
+
+        assert!(blocks[0].get("cache_control").is_none());
+        assert_eq!(blocks[1]["type"], "image");
+        assert_eq!(blocks[1]["cache_control"], ephemeral());
+    }
+
+    #[test]
+    fn prompt_caching_skips_empty_text_blocks() {
+        // Anthropic cannot cache an empty text block, so the marker goes on the
+        // nearest earlier block of the final message that can carry it...
+        let trailing_empty = Prompt::new(vec![Message::user_multimodal(vec![
+            ContentBlock::image_url("https://example.com/chart.png"),
+            ContentBlock::text(""),
+        ])]);
+        let body = request_body(&trailing_empty, true, None);
+        let blocks = body["messages"][0]["content"]
+            .as_array()
+            .expect("multimodal turn is a block array");
+        assert_eq!(blocks[0]["cache_control"], ephemeral());
+        assert!(blocks[1].get("cache_control").is_none());
+
+        // ...and a final message with nothing cacheable is sent unchanged.
+        let empty_text = Prompt::new(vec![Message::user_multimodal(vec![ContentBlock::text("")])]);
+        assert_eq!(
+            request_body(&empty_text, true, None)["messages"],
+            request_body(&empty_text, false, None)["messages"]
+        );
+    }
+
+    #[test]
+    fn prompt_caching_never_exceeds_four_breakpoints() {
+        // Anthropic accepts at most four cache_control markers per request.
+        // The system prompt, the last tool and the final message use three,
+        // whatever the conversation ends with.
+        let tools = three_tools();
+        for len in 1..=conversation().len() {
+            let with_prefix = breakpoints(&request_body(&prompt_of(len), true, Some(&tools)));
+            assert!(
+                with_prefix <= 4,
+                "{with_prefix} breakpoints, {len} messages"
+            );
+            assert_eq!(
+                with_prefix, 3,
+                "system, last tool, final message ({len} messages)"
+            );
+
+            let bare = Prompt::new(conversation().into_iter().take(len).collect());
+            assert_eq!(breakpoints(&request_body(&bare, true, None)), 1);
+        }
+    }
+
+    #[test]
+    fn prompt_caching_off_keeps_the_conversation_wire_bytes() {
+        let request = test_provider().build_request(
+            &AnthropicModel::ClaudeSonnet45,
+            &prompt_of(6),
+            &GenerationConfig::new(),
+            false,
+            None,
+        );
+
+        // Today's bytes, captured before message breakpoints existed: with
+        // caching off, no block gains a field and no string becomes an array.
+        let expected = concat!(
+            r#"[{"role":"user","content":"Look up the ledger."},"#,
+            r#"{"role":"assistant","content":[{"type":"text","text":"Looking it up."},"#,
+            r#"{"type":"tool_use","id":"call_1","name":"lookup","input":{"desk":"HF-007"}},"#,
+            r#"{"type":"tool_use","id":"call_2","name":"lookup","input":{"desk":"HF-008"}}]},"#,
+            r#"{"role":"user","content":["#,
+            r#"{"type":"tool_result","tool_use_id":"call_1","content":"ledger rows"}]},"#,
+            r#"{"role":"user","content":["#,
+            r#"{"type":"tool_result","tool_use_id":"call_2","content":"timed out","is_error":true}]},"#,
+            r#"{"role":"assistant","content":"Entry 40 is the largest."},"#,
+            r#"{"role":"user","content":[{"type":"text","text":"Compare it with this chart."},"#,
+            r#"{"type":"image","source":{"type":"url","url":"https://example.com/chart.png"}}]}]"#,
+        );
+        assert_eq!(
+            serde_json::to_string(&request.messages).expect("messages should serialize"),
+            expected
         );
     }
 }

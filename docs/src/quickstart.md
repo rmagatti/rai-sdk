@@ -104,8 +104,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 Note that `temperature` and `top_p` are ignored for OpenAI reasoning (o-series) models, which do not accept them.
 
-For repeated Anthropic requests that share a long system prompt or tool set,
-opt in to Anthropic's ephemeral prompt caching:
+For repeated Anthropic requests that share a long system prompt, tool set or
+conversation, opt in to Anthropic's ephemeral prompt caching:
 
 ```rust
 use rai_sdk::GenerationConfig;
@@ -113,8 +113,14 @@ use rai_sdk::GenerationConfig;
 let config = GenerationConfig::new().with_prompt_caching(true);
 ```
 
-This setting adds cache breakpoints to Anthropic requests only. Other providers
-silently ignore it, and caching is off by default.
+This setting adds cache breakpoints to Anthropic requests only: on the system
+prompt, on the last tool definition, and on the last content block of the final
+message. The message breakpoint moves to the newest message on every request,
+so each tool round and each new turn reads the conversation so far from the
+cache. Only what was added since the previous request is new input, which
+Anthropic writes to the cache at its cache-write rate. `Usage::cache_read_tokens`
+and `Usage::cache_write_tokens` show it working. Other providers silently
+ignore the setting, and caching is off by default.
 
 ## Next steps
 
