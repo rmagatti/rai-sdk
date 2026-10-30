@@ -17,6 +17,11 @@
 //! at most three of the four Anthropic allows. The message breakpoint moves with
 //! the conversation, so every tool round and every new turn reads what came
 //! before it from the cache.
+//!
+//! [`GenerationConfig::with_reasoning_effort`] goes out as `output_config.effort`,
+//! beside the structured-output `format` when both are set. Anthropic documents
+//! that changing the effort between requests invalidates the cached prefix, so
+//! a conversation that relies on the cache keeps one level.
 
 use super::usage::CostDetails;
 
@@ -32,7 +37,7 @@ use tracing::{debug, error, info, instrument};
 use crate::{
     config::Config,
     error::{Error, ProviderKind, Result},
-    generation::GenerationConfig,
+    generation::{GenerationConfig, ReasoningEffort},
     message::{
         ContentBlock as CommonContentBlock, ImageSource as CommonImageSource, Message, Prompt,
         Response, Role, ToolCall, ToolDefinition, Usage,
@@ -230,12 +235,7 @@ impl AnthropicProvider {
             top_p: config.top_p,
             top_k: config.top_k,
             stop_sequences: config.stop_sequences.clone(),
-            output_config: config
-                .json_schema
-                .clone()
-                .map(|schema| AnthropicOutputConfig {
-                    format: AnthropicOutputFormat::JsonSchema { schema },
-                }),
+            output_config: AnthropicOutputConfig::from_config(config),
             tools: tool_definitions.map(|tools| {
                 let last_index = tools.len().checked_sub(1);
                 tools
@@ -608,7 +608,23 @@ enum AnthropicCacheControl {
 
 #[derive(Debug, Serialize)]
 struct AnthropicOutputConfig {
-    format: AnthropicOutputFormat,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    format: Option<AnthropicOutputFormat>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    effort: Option<ReasoningEffort>,
+}
+
+impl AnthropicOutputConfig {
+    /// The structured-output format and the reasoning effort, or `None` when
+    /// the config sets neither, so a plain request carries no `output_config`.
+    fn from_config(config: &GenerationConfig) -> Option<Self> {
+        let format = config
+            .json_schema
+            .clone()
+            .map(|schema| AnthropicOutputFormat::JsonSchema { schema });
+        let effort = config.reasoning_effort;
+        (format.is_some() || effort.is_some()).then_some(Self { format, effort })
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -889,11 +905,96 @@ mod tests {
 
         match request.output_config {
             Some(AnthropicOutputConfig {
-                format: AnthropicOutputFormat::JsonSchema { schema: actual },
+                format: Some(AnthropicOutputFormat::JsonSchema { schema: actual }),
+                effort: None,
             }) => {
                 assert_eq!(actual, schema);
             }
             _ => panic!("Expected Anthropic JSON schema output_config"),
+        }
+    }
+
+    fn effort_request_body(config: &GenerationConfig, prompt: &Prompt) -> serde_json::Value {
+        let request = test_provider().build_request(
+            &AnthropicModel::ClaudeOpus48,
+            prompt,
+            config,
+            false,
+            None,
+        );
+        serde_json::to_value(request).expect("request should serialize")
+    }
+
+    #[test]
+    fn reasoning_effort_is_sent_as_output_config_effort() {
+        let prompt = Prompt::single(Message::user("hello"));
+        for (effort, wire) in [
+            (ReasoningEffort::Low, "low"),
+            (ReasoningEffort::Medium, "medium"),
+            (ReasoningEffort::High, "high"),
+            (ReasoningEffort::XHigh, "xhigh"),
+            (ReasoningEffort::Max, "max"),
+        ] {
+            let body = effort_request_body(
+                &GenerationConfig::new().with_reasoning_effort(effort),
+                &prompt,
+            );
+
+            assert_eq!(body["output_config"], serde_json::json!({ "effort": wire }));
+            // Thinking stays at the model's default; effort alone steers it.
+            assert!(body.get("thinking").is_none());
+            assert!(body.get("effort").is_none());
+        }
+    }
+
+    #[test]
+    fn reasoning_effort_sits_beside_the_structured_output_format() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": { "answer": { "type": "string" } }
+        });
+        let config = GenerationConfig::new()
+            .with_json_schema(schema.clone())
+            .with_reasoning_effort(ReasoningEffort::Medium);
+
+        let body = effort_request_body(&config, &Prompt::single(Message::user("hello")));
+
+        assert_eq!(
+            body["output_config"],
+            serde_json::json!({
+                "format": { "type": "json_schema", "schema": schema },
+                "effort": "medium"
+            })
+        );
+    }
+
+    #[test]
+    fn reasoning_effort_leaves_the_cached_prefix_unchanged() {
+        // The tools, system prompt and messages are what the cache keys on; an
+        // effort must add its own field and leave every byte of them alone.
+        let tools = three_tools();
+        let caching = GenerationConfig::new().with_prompt_caching(true);
+        for len in 1..=conversation().len() {
+            let prompt = prompt_of(len);
+            let build = |config: &GenerationConfig| {
+                let request = test_provider().build_request(
+                    &AnthropicModel::ClaudeOpus48,
+                    &prompt,
+                    config,
+                    false,
+                    Some(&tools),
+                );
+                serde_json::to_value(request).expect("request should serialize")
+            };
+            let without = build(&caching);
+            let mut with = build(&caching.clone().with_reasoning_effort(ReasoningEffort::Low));
+
+            let output_config = with
+                .as_object_mut()
+                .expect("request is an object")
+                .remove("output_config");
+            assert_eq!(output_config, Some(serde_json::json!({ "effort": "low" })));
+            assert_eq!(with, without, "{len} messages");
         }
     }
 

@@ -122,6 +122,22 @@ Anthropic writes to the cache at its cache-write rate. `Usage::cache_read_tokens
 and `Usage::cache_write_tokens` show it working. Other providers silently
 ignore the setting, and caching is off by default.
 
+To trade reasoning depth for speed and cost, set a reasoning effort:
+
+```rust
+use rai_sdk::{GenerationConfig, ReasoningEffort};
+
+let config = GenerationConfig::new().with_reasoning_effort(ReasoningEffort::Low);
+```
+
+Anthropic receives the level as `output_config.effort`, and OpenRouter's chat
+endpoint as `reasoning.effort`; OpenAI and OpenAI-compatible providers ignore
+it. At lower levels the model thinks less often and less deeply, so its first
+token usually comes sooner and fewer output tokens are billed. Unset, the
+provider's default applies (`high` on most Claude models). With prompt caching
+on, keep one level for the whole conversation: Anthropic documents that
+changing the effort invalidates the cached prefix.
+
 ## Next steps
 
 - [Configuration](./configuration.md) — every environment variable and its builder equivalent.
