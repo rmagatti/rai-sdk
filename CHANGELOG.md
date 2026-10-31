@@ -11,6 +11,12 @@ the public API. Breaking changes are always called out below.
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/rmagatti/rai-sdk/compare/v0.4.2...v0.5.0) - 2026-10-31
+
+### Added
+
+- *(generation)* [**breaking**] add a reasoning effort setting to GenerationConfig ([#28](https://github.com/rmagatti/rai-sdk/pull/28))
+
 ## [0.4.2](https://github.com/rmagatti/rai-sdk/compare/v0.4.1...v0.4.2) - 2026-10-31
 
 ### Fixed
