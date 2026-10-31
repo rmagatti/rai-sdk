@@ -16,7 +16,10 @@
 //! definition, and on the last content block of the final conversation message:
 //! at most three of the four Anthropic allows. The message breakpoint moves with
 //! the conversation, so every tool round and every new turn reads what came
-//! before it from the cache.
+//! before it from the cache. Text content is sent as a block array in every
+//! position, never as a bare string, so a message is rendered the same way in
+//! the request where it carries the breakpoint and in every later request that
+//! repeats it without one.
 //!
 //! [`GenerationConfig::with_reasoning_effort`] goes out as `output_config.effort`,
 //! beside the structured-output `format` when both are set. Anthropic documents
@@ -213,7 +216,7 @@ impl AnthropicProvider {
         let mut messages: Vec<AnthropicMessage> = prompt
             .conversation_messages()
             .into_iter()
-            .map(Self::build_message)
+            .map(|message| Self::build_message(message, prompt_caching))
             .collect();
         if prompt_caching {
             // Requests are rebuilt from the whole prompt each round, so this
@@ -253,7 +256,7 @@ impl AnthropicProvider {
         }
     }
 
-    fn build_message(message: &Message) -> AnthropicMessage {
+    fn build_message(message: &Message, prompt_caching: bool) -> AnthropicMessage {
         let role = match message.role {
             Role::Assistant => "assistant".to_string(),
             Role::User | Role::Tool | Role::System => "user".to_string(),
@@ -318,7 +321,13 @@ impl AnthropicProvider {
             }));
         }
 
-        if content_blocks.len() == 1 {
+        // A lone text block goes out as a bare string, as it always has, unless
+        // caching is on. Then it stays a one-block array wherever the message
+        // sits, so the request that marks it and every later request that
+        // repeats it differ by the `cache_control` key alone. Anthropic does not
+        // reliably match a bare string against the entry written for the marked
+        // block, and the cached prefix is then written again instead of read.
+        if !prompt_caching && content_blocks.len() == 1 {
             if let AnthropicContentBlock::Text { text, .. } = &content_blocks[0] {
                 if message.tool_calls.is_empty() {
                     return AnthropicMessage {
@@ -652,24 +661,18 @@ impl AnthropicMessage {
     ///
     /// Anthropic caches the prefix up to and including a marked block (tools,
     /// then system, then messages), and a later request whose prefix matches
-    /// reads it back. A bare string cannot carry `cache_control`, so string
-    /// content becomes a one-block array; once the message is no longer final
-    /// it goes back to a string, which reads the same cache entry.
+    /// reads it back. `build_message` sends every text message as blocks while
+    /// caching is on, so marking one only sets a field, and the message is
+    /// rendered the same way once it stops being final.
     ///
     /// Leaves the message unchanged when no block can carry a breakpoint (no
     /// blocks at all, or only empty text).
     fn mark_cache_breakpoint(&mut self) {
         match &mut self.content {
-            AnthropicMessageContent::Text(text) => {
-                if text.is_empty() {
-                    return;
-                }
-                let text = std::mem::take(text);
-                self.content = AnthropicMessageContent::Blocks(vec![AnthropicContentBlock::Text {
-                    text,
-                    cache_control: Some(AnthropicCacheControl::Ephemeral),
-                }]);
-            }
+            // Never produced while caching is on, the only time this runs. Do
+            // not convert a string here: the message would then render
+            // differently from the request that repeats it unmarked.
+            AnthropicMessageContent::Text(_) => {}
             AnthropicMessageContent::Blocks(blocks) => {
                 if let Some(slot) = blocks
                     .iter_mut()
@@ -1139,6 +1142,33 @@ mod tests {
         }
     }
 
+    /// `value` with every `cache_control` marker removed.
+    fn without_cache_control(value: &serde_json::Value) -> serde_json::Value {
+        match value {
+            serde_json::Value::Object(fields) => serde_json::Value::Object(
+                fields
+                    .iter()
+                    .filter(|(key, _)| key.as_str() != "cache_control")
+                    .map(|(key, value)| (key.clone(), without_cache_control(value)))
+                    .collect(),
+            ),
+            serde_json::Value::Array(items) => {
+                serde_json::Value::Array(items.iter().map(without_cache_control).collect())
+            }
+            other => other.clone(),
+        }
+    }
+
+    /// A serialized message with string content rewritten as the one text block
+    /// it stands for.
+    fn string_as_text_block(message: &serde_json::Value) -> serde_json::Value {
+        let mut message = message.clone();
+        if let Some(text) = message["content"].as_str().map(str::to_owned) {
+            message["content"] = serde_json::json!([{ "type": "text", "text": text }]);
+        }
+        message
+    }
+
     fn ephemeral() -> serde_json::Value {
         serde_json::json!({ "type": "ephemeral" })
     }
@@ -1158,8 +1188,7 @@ mod tests {
         let uncached_messages = uncached["messages"].as_array().expect("messages array");
         let (last, earlier) = cached_messages.split_last().expect("messages present");
 
-        // A string cannot carry cache_control, so the final turn goes out as
-        // one marked text block.
+        // The final turn is one text block carrying the marker.
         assert_eq!(
             last,
             &serde_json::json!({
@@ -1171,10 +1200,104 @@ mod tests {
                 }]
             })
         );
-        // Earlier messages carry no marker and keep their uncached shape, so
-        // the prefix the next request repeats is unchanged.
+        // Earlier messages carry no marker. They differ from the uncached
+        // request only in sending each lone text turn as a one-block array, the
+        // form it keeps from the request that marked it.
         assert_eq!(earlier.iter().map(breakpoints).sum::<usize>(), 0);
-        assert_eq!(earlier, &uncached_messages[..uncached_messages.len() - 1]);
+        assert_eq!(
+            earlier,
+            uncached_messages[..uncached_messages.len() - 1]
+                .iter()
+                .map(string_as_text_block)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn prompt_caching_sends_a_message_the_same_way_once_it_stops_being_final() {
+        // Round one ends with two user text turns, as an assistant sends a
+        // question and then its turn context. The second carries the marker.
+        let round_one = vec![
+            Message::system("Cache this prefix."),
+            Message::user("Look up the ledger."),
+            Message::user("Context: the ledger widget is open."),
+        ];
+        // Round two repeats them and appends one more message.
+        let mut round_two = round_one.clone();
+        round_two.push(Message::assistant("Entry 40 is the largest."));
+
+        let first = request_body(&Prompt::new(round_one), true, None);
+        let second = request_body(&Prompt::new(round_two), true, None);
+        let marked = &first["messages"][1];
+        let repeated = &second["messages"][1];
+
+        // The repeated message is the marked one without its marker...
+        assert_eq!(&without_cache_control(marked), repeated);
+        // ...and both are text blocks, not strings.
+        assert_eq!(
+            marked,
+            &serde_json::json!({
+                "role": "user",
+                "content": [{
+                    "type": "text",
+                    "text": "Context: the ledger widget is open.",
+                    "cache_control": { "type": "ephemeral" }
+                }]
+            })
+        );
+        assert_eq!(
+            repeated,
+            &serde_json::json!({
+                "role": "user",
+                "content": [{
+                    "type": "text",
+                    "text": "Context: the ledger widget is open."
+                }]
+            })
+        );
+
+        // The question before it is unmarked, and the same, in both rounds.
+        let question = serde_json::json!({
+            "role": "user",
+            "content": [{ "type": "text", "text": "Look up the ledger." }]
+        });
+        assert_eq!(first["messages"][0], question);
+        assert_eq!(second["messages"][0], question);
+    }
+
+    #[test]
+    fn prompt_caching_renders_every_message_shape_the_same_marked_or_not() {
+        let mut messages = conversation();
+        messages.push(Message::user("And the smallest entry?"));
+        let prefix = |len: usize| {
+            let mut prompt = vec![Message::system("Cache this prefix.")];
+            prompt.extend(messages[..len].iter().cloned());
+            Prompt::new(prompt)
+        };
+
+        for len in 1..messages.len() {
+            // Message `len - 1` is final, and marked, in the first request and
+            // repeated unmarked in the second, which appends one more message.
+            let ending_here = request_body(&prefix(len), true, None);
+            let one_more = request_body(&prefix(len + 1), true, None);
+            let marked = &ending_here["messages"][len - 1];
+            let repeated = &one_more["messages"][len - 1];
+            assert_eq!(
+                &without_cache_control(marked),
+                repeated,
+                "message {len} must differ only by its marker"
+            );
+        }
+
+        // With caching on no message is a bare string, which cannot be marked.
+        let body = request_body(&prefix(messages.len()), true, None);
+        let rendered = body["messages"].as_array().expect("messages array");
+        for (index, message) in rendered.iter().enumerate() {
+            assert!(
+                message["content"].is_array(),
+                "message {index} should be a block array: {message}"
+            );
+        }
     }
 
     #[test]
@@ -1246,11 +1369,11 @@ mod tests {
         assert_eq!(blocks[0]["cache_control"], ephemeral());
         assert!(blocks[1].get("cache_control").is_none());
 
-        // ...and a final message with nothing cacheable is sent unchanged.
+        // ...and a final message with nothing cacheable carries no marker.
         let empty_text = Prompt::new(vec![Message::user_multimodal(vec![ContentBlock::text("")])]);
         assert_eq!(
-            request_body(&empty_text, true, None)["messages"],
-            request_body(&empty_text, false, None)["messages"]
+            breakpoints(&request_body(&empty_text, true, None)["messages"]),
+            0
         );
     }
 

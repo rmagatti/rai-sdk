@@ -125,16 +125,19 @@ async fn anthropic_prompt_caching_moves_the_breakpoint_to_each_rounds_final_mess
         }])
     );
 
-    // Round 2 repeats round 1 unmarked and moves the breakpoint to its own
-    // final message, the tool result, so round 1's prefix is read from cache.
+    // Round 2 repeats round 1's message in the same form, minus the marker,
+    // and moves the breakpoint to its own final message, the tool result, so
+    // round 1's prefix is read from cache.
     let round_two = bodies[1]["messages"]
         .as_array()
         .expect("messages should be an array");
     assert_eq!(round_two.len(), 3);
-    assert_eq!(
-        round_two[0],
-        json!({ "role": "user", "content": "Look it up." })
-    );
+    let mut round_one_message = bodies[0]["messages"][0].clone();
+    round_one_message["content"][0]
+        .as_object_mut()
+        .expect("round 1's message should be a text block")
+        .remove("cache_control");
+    assert_eq!(round_two[0], round_one_message);
     assert_eq!(round_two[1]["content"][0]["type"], "tool_use");
     assert!(!round_two[1].to_string().contains("cache_control"));
     assert_eq!(round_two[2]["content"][0]["type"], "tool_result");
