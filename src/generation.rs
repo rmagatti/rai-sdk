@@ -8,7 +8,8 @@
 //!
 //! Not every provider honours every field. `top_k` is ignored by providers that
 //! do not support it, Anthropic alone honours `prompt_caching`, and OpenAI
-//! reasoning models drop `temperature`/`top_p`.
+//! reasoning models drop `temperature`/`top_p`. Every provider receives
+//! `reasoning_effort` in its own field and validates the level itself.
 //!
 //! # Examples
 //!
@@ -93,6 +94,11 @@ pub struct GenerationConfig {
     /// Whether Anthropic prompt caching is enabled.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt_caching: Option<bool>,
+
+    /// How much the model reasons while it answers. See
+    /// [`GenerationConfig::with_reasoning_effort`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<ReasoningEffort>,
 }
 
 impl GenerationConfig {
@@ -217,10 +223,88 @@ impl GenerationConfig {
         self
     }
 
+    /// Set how much the model reasons while it answers.
+    ///
+    /// Each provider receives the level's name in its own field:
+    ///
+    /// - Anthropic: `output_config.effort`, beside any structured-output
+    ///   format.
+    /// - OpenAI and OpenAI-compatible endpoints: `reasoning_effort`.
+    /// - OpenRouter: `reasoning.effort`, which OpenRouter translates for each
+    ///   model it routes to, Gemini and the other non-Anthropic, non-OpenAI
+    ///   models included.
+    ///
+    /// The level is not mapped or checked here. The provider validates it, and
+    /// one that does not know the level, or a model that does not support it,
+    /// rejects the request. [`ReasoningEffort`] lists what each provider
+    /// documents.
+    ///
+    /// Unset, nothing is sent and the provider's default applies (for
+    /// example `high` on most Claude models, `medium` on OpenAI). Reasoning
+    /// counts toward [`GenerationConfig::with_max_tokens`], so a higher level
+    /// needs more room.
+    ///
+    /// Keep the level the same on every request of a conversation that uses
+    /// prompt caching: Anthropic and OpenRouter document that changing it
+    /// invalidates the cached prefix. The tool loop sends this config on every
+    /// round, so one call to `generate()` keeps one level.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rai_sdk::{GenerationConfig, ReasoningEffort};
+    ///
+    /// let config = GenerationConfig::new().with_reasoning_effort(ReasoningEffort::Low);
+    /// assert_eq!(config.reasoning_effort, Some(ReasoningEffort::Low));
+    /// ```
+    pub fn with_reasoning_effort(mut self, effort: ReasoningEffort) -> Self {
+        self.reasoning_effort = Some(effort);
+        self
+    }
+
     /// The effective maximum number of tool-calling rounds (defaults to 8).
     pub fn tool_round_limit(&self) -> usize {
         self.max_tool_rounds.unwrap_or(8)
     }
+}
+
+/// How much a model reasons while it answers, from least to most.
+///
+/// The names are the effort levels the providers share. Each level is sent by
+/// name, lowercase (`xhigh` for [`ReasoningEffort::XHigh`]), in the
+/// provider's own field, and the provider validates it:
+///
+/// | Provider | Field | Levels the provider documents |
+/// |---|---|---|
+/// | Anthropic | `output_config.effort` | `low`, `medium`, `high`, `xhigh`, `max`; which a model accepts varies |
+/// | OpenAI | `reasoning_effort` | `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`; not every reasoning model supports every value |
+/// | OpenAI-compatible endpoint | `reasoning_effort` | whatever the endpoint implements |
+/// | OpenRouter | `reasoning.effort` | `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, translated for each model |
+///
+/// A provider that does not know a level, or a model that does not support
+/// it, rejects the request; nothing is mapped to a nearby level here.
+///
+/// At lower levels the model reasons less often and less deeply, so it
+/// usually answers sooner and bills fewer output tokens, since reasoning is
+/// billed as output. At higher levels it reasons more on hard problems. Set
+/// it with [`GenerationConfig::with_reasoning_effort`].
+///
+/// New levels may be added, so a `match` on this enum needs a wildcard arm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[non_exhaustive]
+pub enum ReasoningEffort {
+    /// Little reasoning: the model skips it on most simple requests.
+    Low,
+    /// Moderate reasoning; the model may skip it on simple requests.
+    Medium,
+    /// Thorough reasoning on most requests that benefit from it.
+    High,
+    /// More reasoning than [`ReasoningEffort::High`], for long agentic and
+    /// coding work. Sent as `xhigh`.
+    XHigh,
+    /// The most reasoning a provider offers.
+    Max,
 }
 
 /// Normalize a generated JSON Schema for strict structured-output providers

@@ -10,6 +10,10 @@
 //! Attribution headers (`HTTP-Referer`, `X-Title`, `X-OpenRouter-Title`,
 //! `X-OpenRouter-Categories`) are sent when the corresponding configuration
 //! values are present.
+//!
+//! [`GenerationConfig::with_reasoning_effort`](crate::GenerationConfig::with_reasoning_effort)
+//! goes out as OpenRouter's unified `reasoning.effort`, which OpenRouter
+//! translates into each model's own reasoning control.
 
 use super::usage::ChatCompletionsUsage;
 
@@ -25,6 +29,7 @@ use tracing::{debug, error, info, instrument};
 use crate::{
     config::Config,
     error::{Error, ProviderKind, Result},
+    generation::ReasoningEffort,
     message::{
         ContentBlock, ImageSource, Message, Prompt, Response, ToolCall, ToolDefinition, Usage,
     },
@@ -253,6 +258,9 @@ impl OpenRouterProvider {
             top_k: config.top_k,
             stop: config.stop_sequences.clone(),
             response_format: None,
+            reasoning: config
+                .reasoning_effort
+                .map(|effort| OpenRouterReasoning { effort }),
             tools: tool_definitions.map(|tools| {
                 tools
                     .iter()
@@ -511,12 +519,19 @@ struct OpenRouterRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     response_format: Option<OpenRouterResponseFormat>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning: Option<OpenRouterReasoning>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<OpenRouterToolDefinition>>,
 }
 
 #[derive(Debug, Serialize)]
 struct OpenRouterStreamOptions {
     include_usage: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenRouterReasoning {
+    effort: ReasoningEffort,
 }
 
 #[derive(Debug, Serialize)]

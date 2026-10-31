@@ -49,6 +49,12 @@
 //! continuation deltas that omit the call id. Payloads it cannot parse are
 //! logged and skipped, so one unrecognized frame cannot truncate a response.
 //!
+//! A [`GenerationConfig::with_reasoning_effort`](crate::GenerationConfig::with_reasoning_effort)
+//! level goes out as `reasoning_effort`, the field OpenAI takes, and the
+//! endpoint decides what it means: it may apply it, ignore it, or reject a
+//! level it does not know. It is not a declared capability, so a rejection is
+//! an ordinary [`Error::InvalidRequest`].
+//!
 //! # Capability degradation
 //!
 //! "OpenAI-compatible" describes a wire format, not a feature set. A 3B model

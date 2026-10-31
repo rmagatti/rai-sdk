@@ -164,7 +164,7 @@ pub mod wire;
 pub use client::{Client, ClientBuilder, RequestBuilder};
 pub use config::{Config, EndpointCapabilities};
 pub use error::{Capability, Error, ProviderKind, Result, ToolArgumentIssue};
-pub use generation::GenerationConfig;
+pub use generation::{GenerationConfig, ReasoningEffort};
 pub use message::{
     ContentBlock, ImageSource, Message, Prompt, Response, Role, StreamChunk, StructuredOutput,
     ToolCall, ToolDefinition, Usage,
