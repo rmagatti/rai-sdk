@@ -149,7 +149,75 @@ async fn openrouter_chat_request_carries_effort_as_reasoning_effort() {
 
 #[cfg(feature = "openai")]
 #[tokio::test]
-async fn openai_request_ignores_reasoning_effort() {
+async fn openai_request_carries_effort_as_reasoning_effort() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(Script::new(vec![Step::ok(chat_completion())]))
+        .mount(&server)
+        .await;
+    let client = common::openai_builder(&server.uri())
+        .model(Model::o3())
+        .build()
+        .expect("client should build");
+
+    client
+        .request()
+        .config(GenerationConfig::new().with_reasoning_effort(ReasoningEffort::High))
+        .prompt("Hello")
+        .generate_once()
+        .await
+        .expect("mocked generation should succeed");
+
+    let bodies = received_json_bodies(&server).await;
+    assert_eq!(
+        bodies[0],
+        json!({
+            "model": "o3",
+            "messages": [{ "role": "user", "content": "Hello" }],
+            "stream": false,
+            "reasoning_effort": "high"
+        })
+    );
+}
+
+#[cfg(feature = "openai")]
+#[tokio::test]
+async fn openai_compatible_request_carries_effort_as_reasoning_effort() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(Script::new(vec![Step::ok(chat_completion())]))
+        .mount(&server)
+        .await;
+    let client = common::openai_compatible_builder(&server.uri())
+        .model(Model::openai_compatible("gpt-oss:20b"))
+        .build()
+        .expect("client should build");
+
+    client
+        .request()
+        .config(GenerationConfig::new().with_reasoning_effort(ReasoningEffort::Medium))
+        .prompt("Hello")
+        .generate_once()
+        .await
+        .expect("mocked generation should succeed");
+
+    let bodies = received_json_bodies(&server).await;
+    assert_eq!(
+        bodies[0],
+        json!({
+            "model": "gpt-oss:20b",
+            "messages": [{ "role": "user", "content": "Hello" }],
+            "stream": false,
+            "reasoning_effort": "medium"
+        })
+    );
+}
+
+#[cfg(feature = "openai")]
+#[tokio::test]
+async fn chat_completions_requests_omit_reasoning_effort_when_unset() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
@@ -159,18 +227,18 @@ async fn openai_request_ignores_reasoning_effort() {
         ]))
         .mount(&server)
         .await;
-    let client = common::openai_builder(&server.uri())
-        .model(Model::gpt4o_mini())
+    let openai = common::openai_builder(&server.uri())
+        .model(Model::o3())
+        .build()
+        .expect("client should build");
+    let compatible = common::openai_compatible_builder(&server.uri())
+        .model(Model::openai_compatible("gpt-oss:20b"))
         .build()
         .expect("client should build");
 
-    for config in [
-        GenerationConfig::new(),
-        GenerationConfig::new().with_reasoning_effort(ReasoningEffort::Max),
-    ] {
+    for client in [&openai, &compatible] {
         client
             .request()
-            .config(config)
             .prompt("Hello")
             .generate_once()
             .await
@@ -179,8 +247,8 @@ async fn openai_request_ignores_reasoning_effort() {
 
     let bodies = received_json_bodies(&server).await;
     assert_eq!(bodies.len(), 2);
-    assert_eq!(
-        bodies[1], bodies[0],
-        "OpenAI has its own reasoning vocabulary; the Anthropic levels must not reach it"
-    );
+    for body in &bodies {
+        // Unset leaves the provider's default in charge: no field at all.
+        assert!(body.get("reasoning_effort").is_none(), "{body}");
+    }
 }

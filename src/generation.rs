@@ -7,9 +7,9 @@
 //! override.
 //!
 //! Not every provider honours every field. `top_k` is ignored by providers that
-//! do not support it, Anthropic alone honours `prompt_caching`, only Anthropic
-//! and OpenRouter honour `reasoning_effort`, and OpenAI reasoning models drop
-//! `temperature`/`top_p`.
+//! do not support it, Anthropic alone honours `prompt_caching`, and OpenAI
+//! reasoning models drop `temperature`/`top_p`. Every provider receives
+//! `reasoning_effort` in its own field and validates the level itself.
 //!
 //! # Examples
 //!
@@ -95,8 +95,8 @@ pub struct GenerationConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt_caching: Option<bool>,
 
-    /// How much the model reasons while it answers (Anthropic and OpenRouter
-    /// only). See [`GenerationConfig::with_reasoning_effort`].
+    /// How much the model reasons while it answers. See
+    /// [`GenerationConfig::with_reasoning_effort`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<ReasoningEffort>,
 }
@@ -225,20 +225,29 @@ impl GenerationConfig {
 
     /// Set how much the model reasons while it answers.
     ///
-    /// Unset, the provider's default applies: on Anthropic that is `high` for
-    /// most Claude models and `medium` for Claude Opus 5.5 and Claude Haiku
-    /// 5.5. Thinking counts toward [`GenerationConfig::with_max_tokens`], so a
-    /// higher level needs more room.
+    /// Each provider receives the level's name in its own field:
     ///
-    /// Anthropic receives the level as `output_config.effort`, beside any
-    /// structured-output format. OpenRouter's chat endpoint receives it as
-    /// `reasoning.effort`, which OpenRouter translates for each model. OpenAI
-    /// and OpenAI-compatible providers ignore it.
+    /// - Anthropic: `output_config.effort`, beside any structured-output
+    ///   format.
+    /// - OpenAI and OpenAI-compatible endpoints: `reasoning_effort`.
+    /// - OpenRouter: `reasoning.effort`, which OpenRouter translates for each
+    ///   model it routes to, Gemini and the other non-Anthropic, non-OpenAI
+    ///   models included.
+    ///
+    /// The level is not mapped or checked here. The provider validates it, and
+    /// one that does not know the level, or a model that does not support it,
+    /// rejects the request. [`ReasoningEffort`] lists what each provider
+    /// documents.
+    ///
+    /// Unset, nothing is sent and the provider's default applies (for
+    /// example `high` on most Claude models, `medium` on OpenAI). Reasoning
+    /// counts toward [`GenerationConfig::with_max_tokens`], so a higher level
+    /// needs more room.
     ///
     /// Keep the level the same on every request of a conversation that uses
-    /// prompt caching: Anthropic documents that changing it invalidates the
-    /// cached prefix. The tool loop sends this config on every round, so one
-    /// call to `generate()` keeps one level.
+    /// prompt caching: Anthropic and OpenRouter document that changing it
+    /// invalidates the cached prefix. The tool loop sends this config on every
+    /// round, so one call to `generate()` keeps one level.
     ///
     /// # Examples
     ///
@@ -261,29 +270,40 @@ impl GenerationConfig {
 
 /// How much a model reasons while it answers, from least to most.
 ///
-/// The levels are Anthropic's `output_config.effort` values. At lower levels
-/// the model thinks less often and less deeply, so it usually answers sooner
-/// and bills fewer output tokens, since thinking is billed as output. At
-/// higher levels it reasons more on hard problems. Not every model accepts
-/// every level: Anthropic rejects a request whose model does not support the
-/// level it names. Set it with [`GenerationConfig::with_reasoning_effort`].
+/// The names are the effort levels the providers share. Each level is sent by
+/// name, lowercase (`xhigh` for [`ReasoningEffort::XHigh`]), in the
+/// provider's own field, and the provider validates it:
+///
+/// | Provider | Field | Levels the provider documents |
+/// |---|---|---|
+/// | Anthropic | `output_config.effort` | `low`, `medium`, `high`, `xhigh`, `max`; which a model accepts varies |
+/// | OpenAI | `reasoning_effort` | `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`; not every reasoning model supports every value |
+/// | OpenAI-compatible endpoint | `reasoning_effort` | whatever the endpoint implements |
+/// | OpenRouter | `reasoning.effort` | `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, translated for each model |
+///
+/// A provider that does not know a level, or a model that does not support
+/// it, rejects the request; nothing is mapped to a nearby level here.
+///
+/// At lower levels the model reasons less often and less deeply, so it
+/// usually answers sooner and bills fewer output tokens, since reasoning is
+/// billed as output. At higher levels it reasons more on hard problems. Set
+/// it with [`GenerationConfig::with_reasoning_effort`].
 ///
 /// New levels may be added, so a `match` on this enum needs a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 #[non_exhaustive]
 pub enum ReasoningEffort {
-    /// The least reasoning: the model skips thinking on most simple requests.
+    /// Little reasoning: the model skips it on most simple requests.
     Low,
-    /// Moderate reasoning; the model may skip thinking on simple requests.
+    /// Moderate reasoning; the model may skip it on simple requests.
     Medium,
-    /// The model thinks on most requests that benefit from it. Anthropic's
-    /// default on most Claude models.
+    /// Thorough reasoning on most requests that benefit from it.
     High,
     /// More reasoning than [`ReasoningEffort::High`], for long agentic and
     /// coding work. Sent as `xhigh`.
     XHigh,
-    /// No limit on how much the model reasons.
+    /// The most reasoning a provider offers.
     Max,
 }
 

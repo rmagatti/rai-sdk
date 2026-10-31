@@ -130,13 +130,16 @@ use rai_sdk::{GenerationConfig, ReasoningEffort};
 let config = GenerationConfig::new().with_reasoning_effort(ReasoningEffort::Low);
 ```
 
-Anthropic receives the level as `output_config.effort`, and OpenRouter's chat
-endpoint as `reasoning.effort`; OpenAI and OpenAI-compatible providers ignore
-it. At lower levels the model thinks less often and less deeply, so its first
-token usually comes sooner and fewer output tokens are billed. Unset, the
-provider's default applies (`high` on most Claude models). With prompt caching
-on, keep one level for the whole conversation: Anthropic documents that
-changing the effort invalidates the cached prefix.
+Each provider receives the level in its own field: Anthropic as
+`output_config.effort`, OpenAI and OpenAI-compatible endpoints as
+`reasoning_effort`, and OpenRouter as `reasoning.effort`, which it translates
+for each model. The level goes out by name and the provider validates it: a
+provider that does not know a level, or a model that does not support it,
+rejects the request. At lower levels the model reasons less often and less
+deeply, so its first token usually comes sooner and fewer output tokens are
+billed. Unset, nothing is sent and the provider's default applies. With prompt
+caching on, keep one level for the whole conversation: Anthropic and OpenRouter
+document that changing the effort invalidates the cached prefix.
 
 ## Next steps
 

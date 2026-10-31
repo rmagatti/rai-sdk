@@ -9,6 +9,12 @@
 //! Reasoning (o-series) models do not accept `temperature`/`top_p`, so those
 //! fields are dropped automatically for them.
 //!
+//! [`GenerationConfig::with_reasoning_effort`](crate::GenerationConfig::with_reasoning_effort)
+//! goes out as `reasoning_effort`, the level's name unchanged. OpenAI documents
+//! the field for reasoning models, with the values `none`, `minimal`, `low`,
+//! `medium`, `high`, `xhigh` and `max`, and not every model supports every
+//! value: OpenAI rejects a level the model does not support.
+//!
 //! # Shared with the OpenAI-compatible provider
 //!
 //! The Chat Completions request shape and SSE framing are not OpenAI-specific,
@@ -391,6 +397,7 @@ pub(crate) fn build_chat_request(
         top_p: config.top_p,
         stop: config.stop_sequences.clone(),
         response_format: None,
+        reasoning_effort: config.reasoning_effort,
         tools: options.tool_definitions.map(|tools| {
             tools
                 .iter()
@@ -570,6 +577,8 @@ pub(crate) struct OpenAIRequest {
     stop: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     response_format: Option<OpenAIResponseFormat>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<crate::generation::ReasoningEffort>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<OpenAIToolDefinition>>,
 }
