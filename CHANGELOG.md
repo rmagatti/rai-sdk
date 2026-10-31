@@ -11,6 +11,12 @@ the public API. Breaking changes are always called out below.
 
 ## [Unreleased]
 
+## [0.4.2](https://github.com/rmagatti/rai-sdk/compare/v0.4.1...v0.4.2) - 2026-10-31
+
+### Fixed
+
+- *(anthropic)* render text content the same way whether or not it carries the cache breakpoint ([#29](https://github.com/rmagatti/rai-sdk/pull/29))
+
 ## [0.4.1](https://github.com/rmagatti/rai-sdk/compare/v0.4.0...v0.4.1) - 2026-10-29
 
 ### Added
