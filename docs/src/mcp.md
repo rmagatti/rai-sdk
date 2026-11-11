@@ -117,7 +117,70 @@ The free `list_tools` and `call_tool` functions accept a connected `Peer` and ty
 
 Use `SchemaProcessor::compile` once for the retained output schemas and `validate` on returned results. This explicit path uses the same validator as `McpTools`. Batch compilation reports any invalid declaration in the supplied batch; applications can compile individual tools to isolate failures. Transport body limits, catalog size limits, credentials, authorization and cache lifetimes remain application-owned.
 
-`RequestOptions::with_timeout` sets one hard budget covering queue wait and response. For catalog calls it also covers the wait for compilation and result validation. Progress notifications do not extend it. A zero timeout does not dispatch; an unrepresentably large timeout is treated as unbounded. `call_tool_until` additionally accepts a cancellation future. Input-required rounds and task handles remain unsupported.
+`RequestOptions::with_timeout` sets one hard budget covering queue wait and response. For catalog calls it also covers the wait for compilation and result validation. Progress notifications do not extend it. A zero timeout does not dispatch; an unrepresentably large timeout is treated as unbounded. `call_tool_until` additionally accepts a cancellation future. Input-required rounds are unsupported; task answers need the entry points in [Tasks](#tasks).
+
+## Tasks
+
+The MCP Tasks extension (`io.modelcontextprotocol/tasks`) lets a server answer a tool call with a task instead of a result, and produce the result later. Two opt-ins are needed:
+
+1. **Declare the extension** in the `ClientConfig` you serve the session with. rmcp sends that declaration with each request on protocol `2026-07-28` and later; the extension does not apply to `2025-11-25`. The server alone decides whether a call becomes a task, and never answers with one to a request that did not declare the extension.
+2. **Call through an entry point that accepts tasks**: `rai_sdk::mcp::call_tool_or_task` or `McpTools::call_result_or_task`. They return `ToolCallOutcome::Completed(result)` or `ToolCallOutcome::Task(handle)`. Every other entry point, including `tools()` inside `generate()`, keeps reporting a task as `McpError::UnsupportedResponse`, so the model never receives a handle it cannot use.
+
+```rust,no_run
+use std::time::Duration;
+
+use rai_sdk::mcp::rmcp::model::{ClientCapabilities, ClientConfig, Implementation, TASKS_EXTENSION_ID};
+use rai_sdk::mcp::{McpTools, RequestOptions, TaskState, ToolCallOutcome};
+use rai_sdk::ToolCall;
+
+# async fn run(catalog: &McpTools, call: &ToolCall) -> Result<(), Box<dyn std::error::Error>> {
+// When connecting: declare the extension for the session.
+let mut capabilities = ClientCapabilities::default();
+capabilities
+    .extensions
+    .get_or_insert_with(Default::default)
+    .insert(TASKS_EXTENSION_ID.to_owned(), Default::default());
+let _config = ClientConfig::new(capabilities, Implementation::new("my-app", "1.0.0"));
+
+// In your own tool loop:
+let options = RequestOptions::with_timeout(Duration::from_secs(30));
+match catalog.call_result_or_task(call, options).await? {
+    ToolCallOutcome::Completed(result) => println!("{:?}", result.structured_content),
+    ToolCallOutcome::Task(handle) => {
+        // Keep `handle.tool` and `handle.task_id()` to resume later.
+        let finished = catalog
+            .wait_for_task(
+                &handle.tool,
+                handle.task_id(),
+                RequestOptions::with_timeout(Duration::from_secs(600)),
+                std::future::pending(),
+            )
+            .await?;
+        if let TaskState::Completed(result) = finished.state {
+            println!("{:?}", result.structured_content);
+        }
+    }
+    _ => {}
+}
+# Ok(())
+# }
+```
+
+Reading and cancelling:
+
+| Function | Request | Result |
+| --- | --- | --- |
+| `get_task`, `McpTools::get_task` | `tasks/get` | `TaskSnapshot`: task metadata and a `TaskState` (`Working`, `InputRequired`, `Completed(CallToolResult)`, `Failed(ErrorData)`, `Cancelled`) |
+| `cancel_task` | `tasks/cancel` | `()` once the server acknowledges; cancellation is cooperative, so read the task to learn how it ended |
+| `wait_for_task`, `McpTools::wait_for_task` | repeated `tasks/get` | the final `TaskSnapshot` |
+
+Each takes `RequestOptions` and has a cancellation form (`_until`, or a cancellation argument for the waits). `McpTools::get_task` and `wait_for_task` validate a completed result against the tool's output schema, the same check a direct call gets; the free functions return it unchanged for `SchemaProcessor::validate`. An unknown or expired task id is `McpError::TaskNotFound`. A cancelled task request is `McpError::TaskRequestCancelled`; it does not cancel the task.
+
+The wait helpers run in your future and never start background work. The first read is immediate. Later reads follow the server's `pollIntervalMs`, kept between 100 milliseconds and 60 seconds, or one second when the server suggests none. The timeout covers the whole wait.
+
+Task requests take a peer and a task id, not the session that created the task, so you can read a task from a later session, for example after a reconnect. The extension binds tasks to no session. It requires servers to authorize every task request and to issue task ids that cannot be guessed, but leaves who may reach a task to each server's permission model. Read with a session authenticated as the same caller.
+
+Not covered: answering a task that waits for client input (`tasks/update`; the snapshot reports `InputRequired` with the server's requests), and `notifications/tasks` status pushes. To observe those, implement `on_task_status` on the rmcp `ClientHandler` you serve the session with. Polling never depends on them.
 
 ## Names
 
@@ -165,6 +228,6 @@ If the future completes first, the call returns `McpError::Cancelled` straight a
 
 ## Limitations
 
-- Results that need further client interaction (`input_required` rounds or task handles) return `McpError::UnsupportedResponse`.
+- `input_required` rounds return `McpError::UnsupportedResponse` on every path. Task answers do too, except through the entry points in [Tasks](#tasks).
 - The model-facing methods cannot forward image or audio tool results. The result-preserving methods return those blocks unchanged.
 - `tools()` and `definitions()` reflect the catalog at the time it was read. Read it again to pick up a server's `tools/list_changed`.

@@ -75,6 +75,8 @@ rand = "0.10"
 rmcp = { version = "3.5", optional = true, default-features = false, features = ["client"] }
 
 [dev-dependencies]
+# Paused-clock tests (`#[tokio::test(start_paused = true)]`).
+tokio = { version = "1", features = ["test-util"] }
 tokio-test = "0.4"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Offline provider mocking and env-var isolation for tests

@@ -36,6 +36,11 @@
 //!   should see: it becomes a [`Message::tool_error`]. A transport, protocol, or
 //!   cancellation failure is an [`McpError`], so the application decides
 //!   whether to retry, report it to the model, or abort the turn.
+//! - **Deferred answers.** A server may answer a call with something other
+//!   than a final result. An `input_required` round is never handled: it is
+//!   [`McpError::UnsupportedResponse`] everywhere. A task is
+//!   [`McpError::UnsupportedResponse`] too, except through the entry points
+//!   described under [Tasks](#tasks), which the application opts into.
 //!
 //! # Credentials and isolation
 //!
@@ -69,6 +74,105 @@
 //! still have taken effect. Dropping a call future also sends cancellation
 //! asynchronously after dispatch. A configured [`RequestOptions::timeout`] covers
 //! dispatch and response together; progress notifications do not extend it.
+//!
+//! # Tasks
+//!
+//! The MCP Tasks extension (`io.modelcontextprotocol/tasks`) lets a server
+//! answer `tools/call` with a task instead of a result, and produce the result
+//! later. Two things opt in, and both are needed:
+//!
+//! 1. **The client declares the extension.** A server may answer with a task
+//!    only to a request that declared the extension in its client capabilities
+//!    (`extensions["io.modelcontextprotocol/tasks"]`, an empty object). Set it
+//!    in the [`ClientConfig`](rmcp::model::ClientConfig) the session is served
+//!    with; rmcp sends it in each request's `_meta` on protocol `2026-07-28`
+//!    and later. The extension does not apply to protocol `2025-11-25`. The
+//!    request carries no other task field: the server alone decides whether to
+//!    create one. Without the declaration, a server that would create a task
+//!    answers with an error instead (rmcp servers use `-32021`, Missing
+//!    Required Client Capability).
+//! 2. **The call goes through an entry point that accepts tasks.**
+//!    [`call_tool_or_task`] and [`McpTools::call_result_or_task`] return a
+//!    [`ToolCallOutcome`]: the final result, or a [`TaskHandle`]. Every other
+//!    entry point keeps reporting a task as [`McpError::UnsupportedResponse`],
+//!    including [`McpTools::tools`] inside the auto-executing request methods,
+//!    where the model sees that error as a tool error. The task keeps running
+//!    on the server until it ends or expires.
+//!
+//! [`get_task`] reads a task's state as a [`TaskSnapshot`]: working, waiting
+//! for input, completed with the tool's [`CallToolResult`], failed with the
+//! JSON-RPC error, or cancelled. [`McpTools::get_task`] also validates a
+//! completed result against the tool's output schema, exactly as a direct
+//! call is validated. [`cancel_task`] asks the server to stop; cancellation is
+//! cooperative, so read the task to learn how it ended. [`wait_for_task`] and
+//! [`McpTools::wait_for_task`] poll at the server's suggested interval until
+//! the task ends, the deadline passes, or the caller cancels. Each takes
+//! [`RequestOptions`] and a cancellation future like the other calls here; no
+//! background polling is ever started.
+//!
+//! Task requests take a peer and a task id, so a task created on one session
+//! can be read or cancelled from another, for example after a reconnect. The
+//! extension binds tasks to no session or connection. It requires servers to
+//! authenticate and authorize every task request, and to generate task ids
+//! that cannot be guessed, but leaves who may reach a task to each server's
+//! own permission model. Use a session authenticated as the same caller, and
+//! expect [`McpError::TaskNotFound`] once a task has outlived its time to
+//! live (`ttlMs`) or when the server does not let this caller see it.
+//!
+//! Tasks waiting for client input (`input_required`) are reported but not
+//! answered by this module. Servers may also push `notifications/tasks`
+//! status updates; this module does not subscribe to them, and polling never
+//! depends on them. An application that wants them implements
+//! [`ClientHandler::on_task_status`](rmcp::ClientHandler::on_task_status) on
+//! the handler it serves its session with.
+//!
+//! ```rust,no_run
+//! use std::time::Duration;
+//!
+//! use rai_sdk::mcp::rmcp::ServiceExt;
+//! use rai_sdk::mcp::rmcp::model::{
+//!     CallToolRequestParams, ClientCapabilities, ClientConfig, Implementation,
+//!     TASKS_EXTENSION_ID,
+//! };
+//! use rai_sdk::mcp::{RequestOptions, TaskState, ToolCallOutcome, call_tool_or_task, wait_for_task};
+//!
+//! # async fn run(
+//! #     transport: tokio::io::DuplexStream,
+//! # ) -> Result<(), Box<dyn std::error::Error>> {
+//! // Declare the tasks extension for the session.
+//! let mut capabilities = ClientCapabilities::default();
+//! capabilities
+//!     .extensions
+//!     .get_or_insert_with(Default::default)
+//!     .insert(TASKS_EXTENSION_ID.to_owned(), Default::default());
+//! let config = ClientConfig::new(capabilities, Implementation::new("my-app", "1.0.0"));
+//! let session = config.serve(transport).await?;
+//!
+//! let options = RequestOptions::with_timeout(Duration::from_secs(30));
+//! let params = CallToolRequestParams::new("buildReport");
+//! let result = match call_tool_or_task(session.peer(), params, options).await? {
+//!     ToolCallOutcome::Completed(result) => result,
+//!     ToolCallOutcome::Task(handle) => {
+//!         // Persist `handle.task_id()` to resume from another session later.
+//!         let finished = wait_for_task(
+//!             session.peer(),
+//!             handle.task_id(),
+//!             RequestOptions::with_timeout(Duration::from_secs(600)),
+//!             std::future::pending(),
+//!         )
+//!         .await?;
+//!         match finished.state {
+//!             TaskState::Completed(result) => result,
+//!             TaskState::Failed(error) => return Err(error.message.into()),
+//!             _ => return Err("the task was cancelled".into()),
+//!         }
+//!     }
+//!     _ => return Err("unexpected outcome".into()),
+//! };
+//! println!("{:?}", result.structured_content);
+//! # Ok(())
+//! # }
+//! ```
 //!
 //! # Example
 //!
@@ -117,7 +221,13 @@ use rmcp::{
 /// copy.
 pub use rmcp;
 
+mod tasks;
 mod validation;
+pub use tasks::{
+    TaskHandle, TaskSnapshot, TaskState, ToolCallOutcome, call_tool_or_task,
+    call_tool_or_task_until, cancel_task, cancel_task_until, get_task, get_task_until,
+    wait_for_task,
+};
 pub use validation::{OutputSchemas, SchemaProcessor};
 
 use crate::{
@@ -159,8 +269,10 @@ pub enum McpError {
         kind: &'static str,
     },
 
-    /// The server answered the call with something other than a final result,
-    /// such as an `input_required` round or a task handle.
+    /// The server answered the call with something the entry point does not
+    /// accept: an `input_required` round (kind `input_required`), or a task
+    /// (kind `task`) on an entry point other than the
+    /// [task-accepting ones](self#tasks).
     #[error("MCP tool '{tool}' returned an unsupported {kind} response")]
     UnsupportedResponse {
         /// Name of the tool on the server.
@@ -201,6 +313,24 @@ pub enum McpError {
     InvalidArguments {
         /// Name of the tool as advertised by the catalog.
         tool: String,
+    },
+
+    /// The server does not know the task id: it never existed, was deleted
+    /// after its time to live, or is not visible to this caller. Servers
+    /// report this as an Invalid params error (`-32602`).
+    #[error("MCP task '{task_id}' was not found")]
+    TaskNotFound {
+        /// The task id that was looked up.
+        task_id: String,
+    },
+
+    /// The caller's cancellation signal completed before a task request
+    /// (`tasks/get`, `tasks/cancel`, or a wait for a final state) finished.
+    /// The task itself is unaffected.
+    #[error("MCP request for task '{task_id}' was cancelled")]
+    TaskRequestCancelled {
+        /// The task the request was about.
+        task_id: String,
     },
 }
 
@@ -255,7 +385,8 @@ pub async fn list_tools(
 /// Content blocks, `structuredContent`, `_meta` and `isError` are unchanged.
 /// No catalog is retained or fetched; applications with their own catalog must
 /// check names and authorization before calling. Transport and protocol errors
-/// remain typed, and input-required rounds and task handles are unsupported.
+/// remain typed. Input-required rounds and task answers are
+/// [`McpError::UnsupportedResponse`]; [`call_tool_or_task`] accepts a task.
 pub async fn call_tool(
     peer: &Peer<RoleClient>,
     params: CallToolRequestParams,
@@ -278,6 +409,27 @@ where
     C: Future<Output = ()>,
 {
     let name = params.name.to_string();
+    match call_tool_inner(peer, params, options, cancelled).await? {
+        ToolCallOutcome::Completed(result) => Ok(result),
+        ToolCallOutcome::Task(_) => Err(McpError::UnsupportedResponse {
+            tool: name,
+            kind: "task",
+        }),
+    }
+}
+
+/// One `tools/call` exchange. A task answer is an outcome here; entry points
+/// that do not accept tasks turn it into [`McpError::UnsupportedResponse`].
+async fn call_tool_inner<C>(
+    peer: &Peer<RoleClient>,
+    params: CallToolRequestParams,
+    options: RequestOptions,
+    cancelled: C,
+) -> Result<ToolCallOutcome, McpError>
+where
+    C: Future<Output = ()>,
+{
+    let name = params.name.to_string();
     let request = ClientRequest::CallToolRequest(CallToolRequest::new(params));
     let response = request_inner(peer, request, options, cancelled)
         .await
@@ -286,16 +438,82 @@ where
             RequestFailure::Service(error) => McpError::Service(error),
         })?;
     match response {
-        ServerResult::CallToolResult(result) => Ok(result),
+        ServerResult::CallToolResult(result) => Ok(ToolCallOutcome::Completed(result)),
         ServerResult::InputRequiredResult(_) => Err(McpError::UnsupportedResponse {
             tool: name,
             kind: "input_required",
         }),
-        ServerResult::CreateTaskResult(_) => Err(McpError::UnsupportedResponse {
-            tool: name,
-            kind: "task",
-        }),
+        ServerResult::CreateTaskResult(created) => Ok(ToolCallOutcome::Task(tasks::handle(
+            name,
+            created.task,
+            created.meta,
+        ))),
         _ => Err(McpError::Service(ServiceError::UnexpectedResponse)),
+    }
+}
+
+/// The time left of one operation's [`RequestOptions::timeout`].
+#[derive(Clone, Copy)]
+struct Budget {
+    started: tokio::time::Instant,
+    timeout: Option<Duration>,
+}
+
+impl Budget {
+    fn remaining(&self) -> RequestOptions {
+        RequestOptions {
+            timeout: self
+                .timeout
+                .map(|timeout| timeout.saturating_sub(self.started.elapsed())),
+        }
+    }
+}
+
+/// Run a multi-step operation under one deadline and cancellation signal.
+///
+/// Each step takes [`Budget::remaining`]. A timeout from any step, or from
+/// the deadline itself, reports the operation's full timeout.
+async fn budgeted<T, C, F, Fut>(
+    options: RequestOptions,
+    cancelled: C,
+    cancelled_error: impl FnOnce() -> McpError,
+    execute: F,
+) -> Result<T, McpError>
+where
+    C: Future<Output = ()>,
+    F: FnOnce(Budget) -> Fut,
+    Fut: Future<Output = Result<T, McpError>>,
+{
+    let budget = Budget {
+        started: tokio::time::Instant::now(),
+        timeout: options.timeout,
+    };
+    let deadline = options
+        .timeout
+        .and_then(|timeout| budget.started.checked_add(timeout));
+    let execute = execute(budget);
+    let expired = async {
+        if options.timeout.is_some_and(|timeout| timeout.is_zero()) {
+            return;
+        }
+        match deadline {
+            Some(deadline) => tokio::time::sleep_until(deadline).await,
+            None => std::future::pending().await,
+        }
+    };
+    let timeout = || {
+        McpError::Service(ServiceError::Timeout {
+            timeout: options.timeout.unwrap_or_default(),
+        })
+    };
+    tokio::select! {
+        biased;
+        () = cancelled => Err(cancelled_error()),
+        () = expired => Err(timeout()),
+        result = execute => match result {
+            Err(McpError::Service(ServiceError::Timeout { .. })) if options.timeout.is_some() => Err(timeout()),
+            result => result,
+        },
     }
 }
 
@@ -708,7 +926,10 @@ impl McpTools {
     /// Each tool calls the server through this catalog's peer. Inside the tool
     /// loop every failure is reported to the model, as for any tool handler:
     /// an `isError` result is sent as returned, and an [`McpError`] is sent as
-    /// a tool error describing it.
+    /// a tool error describing it. That includes a server answering with a
+    /// task ([`McpError::UnsupportedResponse`]): the model cannot use a task
+    /// handle, so an application that wants tasks runs its own loop with
+    /// [`call_result_or_task`](Self::call_result_or_task).
     pub fn tools(&self) -> Vec<Tool> {
         self.tools
             .iter()
@@ -817,64 +1038,62 @@ impl McpTools {
     where
         C: Future<Output = ()>,
     {
-        let started = tokio::time::Instant::now();
-        let deadline = options
-            .timeout
-            .and_then(|timeout| started.checked_add(timeout));
-        let remaining = || RequestOptions {
-            timeout: options
-                .timeout
-                .map(|timeout| timeout.saturating_sub(started.elapsed())),
-        };
-        let execute = async {
-            let params = self.parameters(name, arguments)?;
-            let tool = self.find(name).ok_or_else(|| McpError::ToolNotFound {
-                name: name.to_owned(),
-            })?;
-            let schemas = tool.output_schemas(&self.schema_processor).await?;
-            let result = call_tool(&self.peer, params, remaining()).await?;
-            if let Some(schemas) = &schemas {
-                self.schema_processor
-                    .validate(schemas, name, &result, remaining())
-                    .await?;
-            }
-            Ok(result)
-        };
-        let expired = async {
-            if options.timeout.is_some_and(|timeout| timeout.is_zero()) {
-                return;
-            }
-            match deadline {
-                Some(deadline) => tokio::time::sleep_until(deadline).await,
-                None => std::future::pending().await,
-            }
-        };
-        tokio::select! {
-            biased;
-            () = cancelled => Err(McpError::Cancelled { tool: name.to_owned() }),
-            () = expired => Err(McpError::Service(ServiceError::Timeout { timeout: options.timeout.unwrap_or_default() })),
-            result = execute => match (result, options.timeout) {
-                (Err(McpError::Service(ServiceError::Timeout { .. })), Some(timeout)) => Err(McpError::Service(ServiceError::Timeout { timeout })),
-                (result, _) => result,
+        budgeted(
+            options,
+            cancelled,
+            || McpError::Cancelled {
+                tool: name.to_owned(),
             },
-        }
+            |budget| async move {
+                let (tool, params) = self.prepare(name, arguments)?;
+                let schemas = tool.output_schemas(&self.schema_processor).await?;
+                let result = call_tool(&self.peer, params, budget.remaining()).await?;
+                self.check_output(schemas.as_deref(), name, &result, budget)
+                    .await?;
+                Ok(result)
+            },
+        )
+        .await
     }
 
-    fn parameters(
+    /// Find a catalog tool and build its call. Nothing is sent.
+    fn prepare(
         &self,
         name: &str,
         arguments: serde_json::Value,
-    ) -> Result<CallToolRequestParams, McpError> {
+    ) -> Result<(&McpTool, CallToolRequestParams), McpError> {
         let tool = self.find(name).ok_or_else(|| McpError::ToolNotFound {
             name: name.to_string(),
         })?;
         let params = CallToolRequestParams::new(tool.remote.name.clone());
-        match arguments {
-            serde_json::Value::Object(arguments) => Ok(params.with_arguments(arguments)),
-            serde_json::Value::Null => Ok(params),
-            _ => Err(McpError::InvalidArguments {
-                tool: name.to_owned(),
-            }),
+        let params = match arguments {
+            serde_json::Value::Object(arguments) => params.with_arguments(arguments),
+            serde_json::Value::Null => params,
+            _ => {
+                return Err(McpError::InvalidArguments {
+                    tool: name.to_owned(),
+                });
+            }
+        };
+        Ok((tool, params))
+    }
+
+    /// The output-schema check every catalog path applies to a final result,
+    /// whether it arrived directly or as a completed task.
+    async fn check_output(
+        &self,
+        schemas: Option<&OutputSchemas>,
+        name: &str,
+        result: &CallToolResult,
+        budget: Budget,
+    ) -> Result<(), McpError> {
+        match schemas {
+            Some(schemas) => {
+                self.schema_processor
+                    .validate(schemas, name, result, budget.remaining())
+                    .await
+            }
+            None => Ok(()),
         }
     }
 
